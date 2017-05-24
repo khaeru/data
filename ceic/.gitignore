@@ -1,0 +1,8 @@
+# Downloads
+*.tsv
+
+# Configuration files
+*.yaml
+
+# Generated
+*.nc

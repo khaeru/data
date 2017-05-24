@@ -1,0 +1,53 @@
+# Example configuration file for CEIC data import
+
+# Translations for CEIC data base city names which do not match official
+# names. Mostly these are missing apostrophes before, e.g. "an", or
+# different transliterations for names in minority languages.
+name_map:
+  Maanshan: Ma'anshan  # AH
+  Ngri: Ngari  # XZ
+  Narqu: Nagqu  # XZ
+  Huaian: Huai'an  # JS
+  Jian: Ji'an  # JX
+  Guangan: Guang'an  # SC
+  Yaan: Ya'an  # SC
+  Daxinganling: Daxing'anling  # HL
+  Bayannaoer: Bayannao'er  # NM
+  Erdos: Ordos  # NM
+  Hulunbeier: Hulunbei'er  # NM
+  Xilinggol: Xilingol  # NM
+  Xingan: Xing'an  # NM
+  Taian: Tai'an  # SD
+  Yanan: Yan'an  # SN
+  Xian: Xi'an  # SN
+  Puer: Pu'er  # YN
+
+
+# Variables to import. Specify these as:
+#
+#   Internal name: [CEIC name fragment]
+#
+variables:  #
+  hwy_c3: [Highway, Length of Highway, Class III]
+  oil_fcons_tran:
+    - Petroleum Product
+    - Final Consumption
+    - Transport, Storage, Postal & Telecommunication Service
+
+# Units for imported variables
+units: |
+  person = [person]
+  RMB = [currency]
+  unit = [unit]
+
+  person_km_mn = 1e6 * person * km
+  person_mn = 1e6 * person
+  person_th = 1e3 * person
+  sq_km = km ** 2
+  sq_m = m ** 2
+  rmb = RMB
+  rmb_bn = 1e9 * RMB
+  ton_km_mn = 1e6 * tonne * km
+  ton_mn = 1e6 * tonne
+  ton_th = 1e3 * tonne
+  unit_th = 1e3 * unit
