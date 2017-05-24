@@ -4,6 +4,7 @@ This repository contains Python 3 modules that retrieve, clean, subset and other
 
 * `ceic` — CEIC Data's China Premium Database
 * `chip` — China Household Income Project
+* `chfs` — China Household Finance Survey
 * `cn_nbs` — National Bureau of Statistics of China
 
 The modules are independent but have a roughly similar [API](https://en.wikipedia.org/wiki/Application_programming_interface). Each module…

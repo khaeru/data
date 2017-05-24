@@ -1,0 +1,12 @@
+# Downloads
+rar/*.rar
+
+# Extracted files
+*.csv
+*.docx
+*.dta
+*.pdf
+*.sas7bdat
+
+# Cache
+cache/*.pkl
