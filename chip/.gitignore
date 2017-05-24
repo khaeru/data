@@ -1,0 +1,10 @@
+# Downloads
+rar/*.rar
+
+# Extracted files
+*.do
+*.dta
+*.pdf
+
+# Cache
+cache/

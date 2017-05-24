@@ -1,0 +1,40 @@
+files:
+  path: 1995
+  name: 03012-000(?P<sample>[1-4])-Data.dta
+
+map:
+  _dim: sample
+  _default:
+    section: all
+  '1':
+    sample: rural
+    unit: r_person
+  '2':
+    sample: rural
+    unit: r_household
+  '3':
+    sample: urban
+    unit: person
+  '4':
+    sample: urban
+    unit: household
+
+column:
+  B101:
+    name: Household
+    type: int
+  B118:
+    drop: true
+  N1:
+    name: Household code number
+    type: int
+
+unit:
+  household:
+    index: N1
+  person:
+    index: [N1, A2]
+    unique: false
+  r_household:
+    index: [A1, B101]
+  # r_person: every row is a unique person

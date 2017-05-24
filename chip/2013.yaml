@@ -1,0 +1,20 @@
+# NB this file is incomplete
+files:
+  path: 2013
+  name:
+    - CHIP2013_(?P<sample>migrant|rural|urban)_(?P<unit>person|household)(?:_(?P<section>.*))?.dta
+
+map:
+  _default:
+    section: all
+
+column:
+  person:
+    name: Household member code
+    type: int
+
+unit:
+  person:
+    index: [hhcode, person]
+  household:
+    index: hhcode

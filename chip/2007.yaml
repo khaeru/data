@@ -1,0 +1,98 @@
+files:
+  path: 2007
+  name:
+    - (?P<sample>M|R|U)HS_w1_(?P<section>abc|comu[1-5]|d|e[1-4](|[12]|_20151222v)|f|fgi|fghijls|vill).dta
+    - (?P<sample>CHIP2007_income_and_expenditure_20150408).dta
+    - (?P<sample>name_id_and_village_id_20151010).dta
+
+map:
+  _dim: [sample, section]
+  _default: {unit: household}
+  M:
+    _all: {sample: migrant}
+    abc: {unit: person}
+    d: {unit: m_child}
+    e1: {unit: m_nonres_spouse}
+    e2: {unit: m_nonres_child}
+    e3: {unit: hh_head_parent}
+    e41: {unit: m_social}
+    e42: {unit: m_hh_head_sibling}
+  R:
+    _all: {sample: rural}
+    _default: {unit: other}
+    d: {unit: r_child}
+    e1: {unit: r_nonres_child}
+    e2: {unit: r_hh_head_parent}
+    e4: {unit: r_social}
+    vill: {unit: village}
+  U:
+    _all: {sample: urban}
+    _default: {unit: other}
+    abc: {unit: person}
+    comu1: {unit: org}
+    comu2: {unit: org}
+    comu3: {unit: org}
+    comu4: {unit: org}
+    comu5: {unit: org}
+    d: {unit: child}
+    fgi: {unit: household}
+  CHIP2007_income_and_expenditure_20150408:
+    _all:
+      sample: rural
+      unit: other
+      section: all
+  name_id_and_village_id_20151010:
+    _all:
+      sample: rural
+      unit: r_person
+      section: all
+
+column:
+  hhcode:
+    name: Household code
+    type: int
+  id:
+    name: Household member id
+    type: int
+  a13:
+    drop: true
+  c172:
+    drop: true
+
+unit:
+  child:
+    index: [year, count, hhcode, street, group, hous, d02]
+    unique: false
+  hh_head_parent:
+    index: [hhcode, e3]
+  household:
+    index: hhcode
+    unique: false  # 1 duplicate row
+  org:
+    index: [orgn_code, orgn_code2]
+  person:
+    index: [hhcode, id]
+  m_child:
+    index: [hhcode, d1, d106_2, year]
+  m_hh_head_parent:
+    index: [hhcode, e3]
+  m_hh_head_sibling:
+    index: [hhcode, e4]
+  m_nonres_child:
+    index: [hhcode, e2]
+  m_nonres_spouse:
+    index: [hhcode, e1]
+  m_social:
+    index: [hhcode, e4]
+  r_child:
+    index: [name_id, people]
+  r_hh_head_parent:
+    index: [name_id, people]
+  r_nonres_child:
+    index: [name_id, people]
+  r_person:
+    index: [name_id, village_id]
+  r_social:
+    index: [name_id, people]
+  village:
+    index: village_id

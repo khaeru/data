@@ -1,0 +1,11 @@
+files:
+  path: 1999
+  name: UHIP1999-(?P<unit>个人|家户)数据.dta
+
+map:
+  _dim: unit
+  _default:
+    sample: all
+    section: all
+  个人: person
+  家户: household

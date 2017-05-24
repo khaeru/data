@@ -1,0 +1,71 @@
+files:
+  path: 2002
+  name: 21741-00(?P<sample>[01][0-9])-Data.dta
+
+map:
+  _dim: sample
+  '01':  # Must be quoted or else are converted to 1 != '01'
+    sample: urban
+    unit: person
+    section: Income, consumption and employment
+  '02':
+    sample: urban
+    unit: household
+    section: Income, consumption and employment
+  '03':
+    sample: urban
+    unit: person
+    section: Annual income
+  '04':
+    sample: urban
+    unit: household
+    section: Assets, expenditure, income and conditions
+  '05':
+    sample: rural
+    unit: village
+    section: Administrative
+  '06':
+    sample: rural
+    unit: r_person
+    section: Income, consumption and employment
+  '07':
+    sample: rural
+    unit: r_household
+    section: Income, consumption, employment, social network, quality of life, village affairs
+  '08':
+    sample: rural
+    unit: r_person
+    section: School-age children
+  '09':
+    sample: migrant
+    unit: m_person
+    section: All
+  '10':
+    sample: migrant
+    unit: m_household
+    section: All
+
+column:
+  PCODE:
+    name: Household member code
+    type: int
+  CODE_P:
+    name: Household member code
+    type: int
+
+unit:
+  household:
+    index: PCODE
+  person:
+    index: [CITY, PCODE, CODE_P]
+    unique: false
+  m_household:
+    index: CODE
+  m_person:
+    index: [CODE, P102]
+  r_household:
+    index: [COUN, VILL, HOUS]
+  r_person:
+    index: [COUN, VILL, HOUS, P1_2]
+  village:
+    index: [COUN, VILL]

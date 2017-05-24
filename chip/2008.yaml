@@ -1,0 +1,48 @@
+# NB this file is incomplete
+files:
+  path: 2008
+  name:
+    - (?P<sample>MHS(n|o)|RHS|UHS)_w2_(?P<section>abc|ac|d|e[1-4]?|f|fghijl|fi|g|hgsg|hijk|jk).dta
+    - (?P<sample>RHS)_w2_(?P<unit>vill).dta
+
+map:
+  _dim: [sample, section]
+  _default:
+    unit: household
+    section: all
+  MHSn:
+    _all: {sample: migrant_new}
+    abc: {unit: m_person}
+  MHSo:
+    _all: {sample: migrant_old}
+    abc: {unit: m_person}
+  RHS:
+    _all: {sample: rural}
+    abc: {unit: r_person}
+  UHS:
+    _all: {sample: urban}
+    ac: {unit: person}
+    d: {unit: child}
+    g: {unit: hh_head_sibling}
+
+column:
+  a28_3:
+    drop: true
+  a30_1:
+    drop: true
+  b112_1:
+    drop: true
+
+unit:
+  child:
+    index: [code, d02]
+  hh_head_sibling:
+    index: [code, g01, g02, g06]
+  person:
+    index: [hhcode, person]
+  m_person:
+    index: [hhcode, id]
+  r_person:
+    index: [name_id, person]
+  vill:
+    index: village_id
