@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+"""National Bureau of Statistics of China."""
 import json
 from os.path import dirname, exists, join
 
@@ -5,6 +7,9 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+__all__ = [
+    'load_nbs',
+    ]
 
 BASE_URL = 'http://data.stats.gov.cn/english/easyquery.htm'
 CACHE_DIR = join(dirname(__file__), 'cn_nbs')
@@ -159,3 +164,19 @@ def parse_nbs_json(data):
         ds['region'] = [int(r) for r in ds['region'].values]
 
     return ds
+
+
+if __name__ == '__main__':
+    import click
+
+    try:
+        from _util import click_nowrap
+        click_nowrap()
+    except ImportError:  # User hasn't downloaded _util.py
+        pass
+
+    @click.group(help=__doc__)
+    def cli():
+        pass
+
+    cli()

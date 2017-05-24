@@ -1,21 +1,7 @@
+#!/usr/bin/env python3
 """Import, merge & preprocess raw data from the China Household Income Project
 
 http://www.ciidbnu.org/chip/index.asp?lang=EN
-
-USAGE
-
-On the command line:
-
-python3 chip.py [YEARS]  # import the CHIP data for YEARS to chip/cache
-py.test chip.py          # unit testing (needs pytest)
-
-In Python code:
-
-import chip
-chip.import_chip(2002, debug=True)
-d = chip.load_chip(2002, only=[('person', 'migrant'), ('household', 'urban')])
-…
-
 
 TECHNICAL INFORMATION
 
@@ -32,15 +18,14 @@ parents of the household head(s) who may or may not be resident in the
 household. These are usually indexed by different variables and have different
 data associated with them, so chip.py stores them separately.
 
-- chip/
-  - rar/ — original files downloaded from the [CHIP data website](
-    http://www.ciidbnu.org/chip/index.asp?lang=EN) (not on Dropbox)
-  - YYYY/ — unpacked files for year YYYY in Stata .dta format (data) and .pdf
-    (questionnaires and summary statistics)
-  - YYYY.yaml — description of the data set for year YYYY, used by chip.py
-  - YYYY.log (Dropbox only) — log files for CHIP data import
-  - cache/ — CHIP data imported to Python/pandas format (not on Dropbox)
-    - YYYY.log — as above, actual location
+FILES IN chip/
+
+- rar/ — original files downloaded from the CHIP data website
+- cache/ — CHIP data imported to Python/pandas format
+- YYYY/ — unpacked files for year YYYY in Stata .dta format (data) and .pdf
+  (questionnaires and summary statistics)
+- YYYY.yaml — metadata for the year YYYY data set
+- YYYY.log — log files for import
 """
 import logging
 import os
@@ -49,17 +34,18 @@ import re
 import pandas as pd
 import pytest
 
-
-__all__ = ['import_chip', 'load_chip']
-
-log = logging.getLogger(__name__)
-
+__all__ = [
+    'import_chip',
+    'load_chip',
+    ]
 
 # Path containing raw CHIP data and data set description (.yaml) files
-RAW = 'chip'
+RAW = os.path.join(os.path.dirname(__file__), 'chip')
 
 # Target path for imported data
-CACHE = os.path.join(os.path.dirname(__file__), 'chip', 'cache')
+CACHE = os.path.join(RAW, 'cache')
+
+log = logging.getLogger(__name__)
 
 
 def _deduplicate(x, log, log_indent='\t'):
@@ -286,6 +272,8 @@ def import_chip(year, input_dir='.', output_dir=None, only=None, debug=False):
     Information is logged to *output_dir*/*year*.log. If *debug* is True
     (default: False), verbose debugging information is logged.
 
+    Example:
+        chip.import_chip(2002, debug=True)
     """
     import logging
 
@@ -428,6 +416,9 @@ def load_chip(year, input_dir=CACHE, import_dir=RAW, only=None, debug=False):
     *only* is an optional collection of (unit, sample) tuples. If given, only
     those specified combinations from the data set are returned.
 
+    Example:
+        d = chip.load_chip(2002, only=[('person', 'migrant'),
+                                       ('household', 'urban')])
     """
     # Directory and filenames
     fn_re = re.compile('^%d-(?P<unit>.*)-(?P<sample>.*)\.pkl$' % year)
@@ -513,8 +504,13 @@ class TestCHIP:
 
 
 if __name__ == '__main__':
-    # Parse the command line for an optional set of years to import
     import click
+
+    try:
+        from _util import click_nowrap
+        click_nowrap()
+    except ImportError:  # User hasn't downloaded _util.py
+        pass
 
     @click.group(help=__doc__)
     @click.option('--verbose', is_flag=True, help='Give verbose output')

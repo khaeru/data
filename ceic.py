@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """CEIC Data China Premium Database"""
 from collections import OrderedDict
 import logging
@@ -395,6 +396,12 @@ def tuple_find(a, b):
 
 if __name__ == '__main__':
     import click
+
+    try:
+        from _util import click_nowrap
+        click_nowrap()
+    except ImportError:  # User hasn't downloaded _util.py
+        pass
 
     @click.group()
     @click.option('--verbose', is_flag=True, help='Give verbose output')
