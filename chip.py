@@ -178,8 +178,11 @@ def _report_duplicates(data, index, log):
                                      .dropna(how='all')), '\t'))
 
 
-def import_chip(year, input_dir='.', output_dir=None, only=None, debug=False):
+def import_chip(year, input_dir=RAW, output_dir=CACHE, only=None, debug=False):
     """Import the CHIP data set for *year* to files *output_dir*/*year*….pkl.
+
+    On the command line, YEARS can be a space-separated list of years, or the
+    string 'all'.
 
     In addition to writing a .pkl file for every (unit, sample) combination in
     the data set, returns a tuple containing:
@@ -528,7 +531,8 @@ if __name__ == '__main__':
             years = list(map(int, years))
 
         log.info('Importing %s', years)
+
         for year in years:
-            import_chip(year, input_dir=RAW, output_dir=CACHE, debug=True)
+            import_chip(year, debug=True)
 
     cli()
