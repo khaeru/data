@@ -1,8 +1,5 @@
-# Configuration
-*.yaml
-
 # Downloads
-*.tsv
+*.csv
 
 # Cache
 *.nc

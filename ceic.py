@@ -1,28 +1,35 @@
 #!/usr/bin/env python3
 """CEIC Data China Premium Database"""
-from collections import OrderedDict
 import logging
-import os
+from os.path import commonprefix, dirname, join
 
 import gb2260
-import pandas as pd
+import pandas as pd  # >= 0.20
+import pint
+import xarray as xr
+# Importing data also requires: tqdm
 
 __all__ = [
     'import_ceic',
     'load_ceic',
     ]
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), 'ceic')
-CURRENT = '2014-03-14'
+DATA_DIR = join(dirname(__file__), 'ceic')
+
+VERBOSE = False
 
 # Used by import_ceic and lookup_gbcode
-NAME_MAP = {}
-units = None
+META = {}
 
 log = logging.getLogger(__name__)
 
 
-def import_ceic(filename=CURRENT, input_dir=DATA_DIR, output_dir=DATA_DIR,
+class VariableImportError(Exception):
+    """Something went wrong importing a variable."""
+    pass
+
+
+def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
                 cache=True):
     """Import CEIC Data.
 
@@ -56,228 +63,180 @@ def import_ceic(filename=CURRENT, input_dir=DATA_DIR, output_dir=DATA_DIR,
     If *debug* is True (default: False), verbose debugging information is
     logged to the 'ceic' logger and also written to *output_dir*/ceic.log.
     """
-    from ast import literal_eval
+    from glob import glob
 
-    import xarray as xr
-    import yaml
+    from tqdm import tqdm
 
-    global NAME_MAP
+    # Read options from file
+    _read_metadata(input_dir)
 
-    # Configure logging
-    handler = logging.FileHandler(os.path.join(output_dir, filename + '.log'),
-                                  mode='w')
-    log.addHandler(handler)
+    # List of pd.DataFrames
+    dfs = []
 
-    # Variables to import
-    v = {}
+    # Read data from each CSV file in input_dir
+    log.info('Read data')
+    for fn in glob(join(input_dir, '*.csv')):
+        log.info('  from %s', fn)
 
-    # Read options
-    options_fn = os.path.join(input_dir, filename + '.yaml')
-    log.info('reading options from %s', options_fn)
-    with open(options_fn) as f:
-        options = yaml.load(f)
-        NAME_MAP.update(options['name_map'])
-        load_units(options['units'])
-        v.update(options['variables'])
+        # Read the CSV fill, drop empty rows and columns, and remove exact
+        # duplicate rows
+        tmp = pd.read_csv(fn).dropna(axis=[0, 1], how='all') \
+                .drop_duplicates() \
+                .rename(columns={'': 'Name', 'Unnamed: 0': 'Name'})
 
-    # Sort variables *in reverse* by the string representation of the name
-    # fragment. This ensures that e.g. ['Population', 'Rural'] is matched
-    # before ['Population'].
-    variables = OrderedDict(sorted(v.items(),
-                                   key=lambda t: ''.join(t[1]),
-                                   reverse=True))
+        log.info('  %d series', len(tmp))
 
-    # Converters for use in reading the TSV. Interpret strings like:
-    #   ('No of Motor Vehicle', 'Total')
-    # as Python tuples.
-    converters = {
-        'name': lambda x: literal_eval(x),
-        'series code': lambda x: literal_eval(x)[1],
+        dfs.append(tmp)
+
+    # Concatenate to a single pd.DataFrame
+    data = pd.concat(dfs)
+
+    # Count non-zero values
+    data_cols = pd.to_datetime(data.columns, errors='coerce').notnull()
+    N = data.loc[:, data_cols].notnull().sum().sum()
+    log.info('Total %d series, %d non-zero values', len(data), N)
+
+    # NB to debug, subset the data here like:
+    # l = ['MWD', 'NUN']
+    # data = data[data['Series Code'].str.match('.*CHA(%s)' % '|'.join(l))]
+
+    # Rename columns to lower case
+    data.columns = data.columns.to_series().apply(str.lower)
+
+    log.info("Transform metadata columns")
+
+    # Strip a preceding 'CN: ' from the name column, convert to list
+    data['name'] = data['name'].str.lstrip('CN:').str.lstrip().str.split(': ')
+
+    # Convert the series code column ('1234 (ABCD)') and split into separate
+    # columns
+    sc_regex = '(?P<series_code_numeric>\d+) \((?P<series_code_alpha>\w+)\)'
+    sc_rename = {
+        'series_code_numeric': 'series code numeric',
+        'series_code_alpha': 'series code alpha',
         }
+    data = pd.concat([
+        data,
+        data['series code'].str.extract(sc_regex, expand=True),
+        ], axis=1).rename(columns=sc_rename)
 
-    data_fn = os.path.join(input_dir, filename + '.tsv')
-    log.info('read data from %s', data_fn)
+    # Convert types
+    for s in ('first', 'last'):
+        col = '%s obs. date' % s
+        data[col] = pd.to_datetime(data[col], errors='coerce')
 
-    # Read the TSV file, indexing on the CEIC series code
-    # - Drop empty rows and columns
-    # - Remove exact duplicate rows
-    data = pd.read_csv(data_fn, delimiter='\t', index_col='series code',
-                       converters=converters) \
-             .dropna(axis=[0, 1], how='all').drop_duplicates()
+    # Make the alpha series code the index
+    data.set_index('series code alpha', drop=False)
 
-    N_series = data.shape[0]
-    log.info('  %d series', N_series)
+    log.info('Preprocess rules from file:')
+    for rule in META['preprocess']:
+        log.info(rule)
 
-    # The 'name' column contains values like:
-    #     ('No of Motor Vehicle', 'Private Owned', 'Hebei', 'Baoding')
-    #
-    # *variables* contains a list of name fragments, like:
-    #     ('No of Motor Vehicle', 'Private Owned')
-    #
-    # If the name fragment matches, keep the series; otherwise, discard. Use
-    # the remaining elements of the name to identify the region for the data.
-    log.info('match %d variables', len(variables))
+        # Transform the rule into Python expressions
+        predicate = eval('lambda row: %s' % rule['predicate'])
+        env = {}
+        exec('def transform(row):\n %s\n return row' % rule['transform'], env)
 
-    # Dict of variable name → list of (gbcode, series.name)
-    index = {k: [] for k in variables.keys()}
+        # Apply the rule
+        mask = data.apply(predicate, axis=1)
+        data[mask] = data[mask].apply(env['transform'], axis=1)
 
-    def match_series(series):
-        """Return True if *series* is to be imported.
+    # Add columns 'name group', 'region', 'gbcode', 'level'
+    log.info('Compute indexes')
 
-        match_series() also populates *index*[*var*].
-        """
-        name = series['name']
+    if not VERBOSE:
+        META['progressbar'] = tqdm(total=len(data))
+    data = pd.concat([data, data.apply(_match_gbcode, axis=1)], axis=1)
 
-        # Loop over variables
-        for var, fragment in variables.items():
-            # Find the position of *fragment* in *name*
-            i = tuple_find(fragment, name)
+    if not VERBOSE:
+        META['progressbar'].close()
 
-            if i < 0:
-                # No match found
-                continue
+    log.debug('Name part searches 1: %r', _search_kwargs_debug1)
+    log.debug('Name part searches 2: %r', _search_kwargs_debug2)
 
-            # Identify region
-            gb = lookup_gbcode(list(name[i+len(fragment):]))
-            if gb is not None:
-                # Region identified; record the CEIC series code (note this is
-                # NOT the same as series['name']!) and keep the series.
-                index[var].append((gb, series.name))
-                return True
-            else:
-                log.debug('Could not match GB code for %s',
-                          name[i+len(fragment):])
+    log.info('Grouping into variables')
+    # regional detail → list of xr.DataArray
+    das = {level: [] for level in (0, 1, 2, 3)}
+    for key, df in data.groupby('name group'):
+        message = []  # Accumulate messages to log on error
 
-        # Either no variable matched, or could not identify region; discard
-        return False
-
-    # Compute a boolean vector on the data & use it to subset all series
-    data = data[data.apply(match_series, axis=1)]
-    log.info('Dropped %d series; %d remain', N_series - data.shape[0],
-             data.shape[0])
-    data['unit'] = data['unit'].apply(parse_unit)
-
-    # Split the data to several variables, populating *das*
-    # index[k][1] contains a list of column names for each variable; transfer
-    # these from *data* into a number of separate data frames in *d*.
-    das = []  # list of xarray.DataArray
-    for k, v in index.items():  # Iterate over variables
-        log.info('Processing %d series for %s', len(v), k)
-
-        if len(v) == 0:
-            continue
-
-        new, old = zip(*v)  # new ← GB/T 2260 codes; old ← CEIC codes
-
-        # Select the series for this variable
-        # - Drop any empty rows or columns
-        # - Rename rows with GB/T 2260 codes
-        df = data.loc[old, :].dropna(axis=[0, 1], how='all') \
-                 .rename(index=dict(zip(old, new)))
-
-        dropped = len(new) - df.shape[0]
-        if dropped > 0:
-            log.info('Dropped %s empty series', dropped)
-
-        # Resolve duplicate series names. Some series have the same CEIC name
-        # and region, but different CEIC codes, data, and metadata. This
-        # results in multiple columns named with the same GB/T 2260 codes.
-        dupes = df.index.get_duplicates()
-
-        if len(dupes):
-            log.info('Deduplicating %d duplicate series names', len(dupes))
-        for dupe in dupes:
-            # Select each set of duplicates
-            dseries = df.loc[dupe, :].copy()
-
-            # Count empty elements in each
-            dseries['na_count'] = dseries.notnull().sum(axis=1)
-
-            # log.debug('Merging duplicates:\n%s', dseries.T)
-
-            # Sort from most to least full, then merge values
-            dseries = dseries.sort_values(by='na_count', ascending=False) \
-                             .drop('na_count', axis=1) \
-                             .fillna(method='ffill', axis=0)
-            dseries.iloc[0, :] = dseries.iloc[-1, :]
-
-            # Merge metadata
-            dseries['source'] = ', '.join(dseries['source'])
-            dseries['first obs'] = dseries['first obs'].min()
-            dseries['last obs'] = dseries['last obs'].max()
-            dseries['updated'] = dseries['updated'].max()
-
-            # Overwrite both the original copies with new data
-            df.loc[dupe, :] = dseries
-
-        # Drop the duplicate rows, keepeing only one of each
-        df = df[~df.index.duplicated()]
-
-        log.info('%d series remaining', df.shape[0])
-
-        i = df.columns.get_loc('updated') + 1
-
-        # if k == 'pop':
-        #     log.info('  adjust population to common units → 10³')
-        #     prov = d['pop']['unit'] == 'Person mn'
-        #     d['pop'].ix[prov, i:] *= 1e3
-        #     d['pop'].loc[prov, 'unit'] = 'Person th'
-
-        log.info('  convert to xarray.DataArray')
-
-        df = normalize_units(df)
-
-        # Construct metadata
-        attrs = {}
+        message.append('Variable: %s' % ': '.join(key))
+        message.append('%s series' % len(df))
 
         try:
-            attrs['unit'] = df['unit'].iloc[0].to_base_units()
-        except AttributeError:
-            print(df['unit'].iloc[0], k)
-            attrs['unit'] = ''
+            # Handle duplicate series
+            df = _deduplicate(df)
 
-        for a in ['country', 'frequency', 'status']:
-            unique_value = df[a].unique()
-            assert len(unique_value) == 1, 'multiple values for %s: %s' % (
-                a, unique_value)
-            attrs[a] = unique_value[0]
-        attrs['source'] = ', '.join(df['source'].unique())
-        attrs['first obs'] = df['first obs'][df['first obs'] > '0000'].min()
-        attrs['last obs'] = df['last obs'].max()
-        attrs['updated'] = df['updated'].max()
-        attrs['name'] = ', '.join(variables[k])
+            # Index on GB codes
+            df = df.set_index('gbcode', drop=False)
 
-        # Split to data and metadata
-        values = df.iloc[:, i:]
-        values.index = values.index.astype(pd.Period)
-        values.index.name = 'gbcode'
+            # A mask for data columns plus 'level'
+            data_cols = pd.to_datetime(df.columns, errors='coerce').notnull()
+
+            try:
+                df = _normalize_units(df, data_cols)
+            except pint.errors.UndefinedUnitError as e:
+                raise VariableImportError('Skipping (units): %s' % e)
+
+            # Construct metadata
+            attrs, name = _make_attrs(df, key)
+        except VariableImportError as e:
+            log.warning('\n  '.join(message + list(e.args)))
+            continue
+
+        # Select values (discard metadata except 'level'), and drop nulls
+        data_cols = data_cols | (df.columns == 'level')
+        values = df.iloc[:, data_cols].dropna(axis=1, how='all')
+
+        # Convert column index to pd.Period
+        values.columns = values.columns.astype(pd.Period)
         values.columns.name = 'period'
+        values.index.name = 'gbcode'
 
-        # Convert to an xarray object
-        das.append(xr.DataArray(values, attrs=attrs, name=k))
+        # Group to national, provincial, etc. levels
+        for level, level_df in values.groupby('level'):
+            # Convert to an xarray object
+            if level == -1:
+                level = 0
+                raise ValueError(level_df)
+            if level < 1:
+                level_df = level_df.iloc[0, :]
+            das[level].append(xr.DataArray(level_df, attrs=attrs, name=name))
 
-    # Merge the xr.DataArrays into a single xr.Dataset
-    ds = xr.merge(das)
-    log.debug(' resulting xarray.Dataset:\n%s', ds)
-    log.info(' number of non-null values:\n%s', ds.notnull().sum())
+    # Done grouping. Merge the xr.DataArrays into xr.Datasets for each level
+    dss = {k: xr.merge(v).dropna(dim='period', how='all') for k, v in
+           das.items()}
 
-    # Cache output
-    if cache:
-        out_fn = os.path.join(output_dir, 'ceic.nc')
-        log.info('write to %s', out_fn)
+    # Cache result
+    total = 0
+    for level, ds in dss.items():
+        # Some diagnostic information
+        log.info('At administrative level %d', level)
+        log.debug('Resulting xarray.Dataset:\n%s', ds)
+        notnull = ds.notnull().sum()
+        total += sum([notnull[x] for x in notnull])
+        log.info('Number of variables: %d', len(ds))
+        log.info('Number of non-null values: %d', total)
+        log.debug(notnull)
 
-        # Serialize units
-        for _, var in ds.data_vars.items():
-            var.attrs['unit'] = str(var.attrs['unit'])
-        ds.attrs['units'] = options['units']
+        if cache:
+            out_fn = join(output_dir, 'ceic-%d.nc' % level)
+            log.info('Write to %s', out_fn)
 
-        ds.to_netcdf(out_fn)
-    else:
-        log.info('skip output to cache')
+            # Serialize units
+            for _, var in ds.data_vars.items():
+                var.attrs['unit'] = str(var.attrs['unit'])
+            ds.attrs['units'] = META['units']
 
-    log.info('done.')
+            ds.to_netcdf(out_fn)
+        else:
+            log.info('Skip output to cache')
 
-    return ds
+    log.info('Kept %2f%% of input data', 100 * total / N)
+    log.info('Done.')
+
+    # Return the dataframe
+    return dss
 
 
 def load_ceic(input_dir=DATA_DIR):
@@ -289,25 +248,237 @@ def load_ceic(input_dir=DATA_DIR):
     data is read and returned. Otherwise, the data is imported by calling
     import_ceic(), with *debug* as an argument.
     """
-    import xarray as xr
-
-    cache_fn = os.path.join(input_dir, 'ceic.nc')
+    cache_fn = join(input_dir, 'ceic.nc')
     log.debug('Reading from %s…', cache_fn)
     try:
         result = xr.open_dataset(cache_fn)
         log.debug('…done')
         log.debug('Unserializing units')
-        load_units(result.attrs['units'])
+        _load_units(result.attrs['units'])
         for _, var in result.data_vars.items():
-            var.attrs['unit'] = units(var.attrs['unit'])
+            var.attrs['unit'] = META['ureg'](var.attrs['unit'])
     except RuntimeError:
         log.debug('Missing, importing directly')
         result = import_ceic()
     return result
 
 
-def normalize_units(df):
-    i = df.columns.get_loc('updated') + 1
+def _deduplicate(df):
+    """Handle duplicates in *df*, returning a deduplicated pd.DataFrame."""
+    skip = False
+
+    duplicates = {}
+    for dupe_key, dupe_df in df.groupby('gbcode'):
+        if len(dupe_df) == 1:
+            continue
+
+        duplicates[dupe_key] = len(dupe_df)
+
+    if skip:
+        raise VariableImportError('Skipping (duplicates): %s' % ' '.join(
+            ['%d (%d)' % (k, v) for k, v in duplicates.items()]))
+
+    df = df.drop_duplicates('gbcode')  # FIXME
+    if len(df) == 0:
+        raise VariableImportError('Skipping (0 rows after dropping duplicates')
+
+    return df
+
+
+def _get_name(name):
+    i = META['prefixes'][name]
+    META['prefixes'][name] += 1
+    return '%s_%d' % (name, i) if i else name
+
+
+def _load_units(defs):
+    """Set up a pint.UnitRegsitry from the string unit *defs*."""
+    from io import StringIO
+
+    import pint
+
+    global META
+
+    # Load units
+    META['ureg'] = pint.UnitRegistry()
+    META['ureg'].load_definitions(StringIO(defs))
+
+
+def _make_attrs(df, key):
+    """Construct attributes for a xr.DataArray from *df* and *key*."""
+    attrs = {
+        'name': ': '.join(key),
+        'source': ', '.join(df['source'].unique()),
+        'first obs': str(df['first obs. date'].min()),
+        'last obs': str(df['last obs. date'].max()),
+        'updated': df['last update time'].max(),
+        'series codes': ' '.join(df['series code alpha']),
+        }
+
+    attrs['unit'] = df['unit'].iloc[0].to_base_units()
+
+    # It's an error to have non-unique values for any of these
+    for a in ['country', 'frequency', 'status']:
+        unique_value = df[a].str.lower().unique()
+        if len(unique_value) == 1:
+            attrs[a] = unique_value[0]
+        else:
+            raise VariableImportError('Skipping (multiple values for %s): %s'
+                                      % (a, unique_value))
+
+    # Get the alias for this variable
+    name = META['rename variables'].get(key, None)
+
+    if name is None:
+        # No alias.
+        codes = list(df['series code alpha'])
+        log.debug('Series code alpha: %s' % ' '.join(codes))
+
+        # Use _get_name to construct a name
+        name = _get_name(commonprefix(codes))
+        log.debug('Use prefix: %s' % name)
+
+    return attrs, name
+
+
+# For disambiguating
+_search_kwargs = [
+    ('name_pinyin', dict(partial=True)),
+    ('name_pinyin', dict(partial=True, level='highest')),  # e.g. Beijing
+    ('name_en', dict(partial=True, level='highest')),  # e.g. Inner Mongolia
+    ]
+# For 26481 series                   Without caching:      With caching:
+_search_kwargs_debug1 = [0, 0, 0]  # [77551, 52170, 30765] [11536, 11474, 6406]
+_search_kwargs_debug2 = [0, 0, 0]  # [21405, 15342, 3909]  [18, 16, 0]
+_match_cache = {}
+
+
+def _match_gbcode(row):
+    """Identify the Chinese administrative region for *row*.
+
+    Returns a pd.Series with the keys:
+    - gbcode
+    - level
+    - name group
+    - region
+
+    """
+    def _recurse(name, root=False):
+        """Recursive method for matching *name*."""
+        part = META['rename regions'].get(name[-1], name[-1])
+        info = None
+        gbcode = 0
+        level = 0
+
+        # First step: try to look up the last part of *name*
+        ambiguous = False
+        for key, kwargs in _search_kwargs:
+            # NB for debugging, loop on enumerate(_search_kwargs) and update
+            # _search_kwargs_debug1
+            kwargs[key] = part
+            try:
+                div = gb2260.divisions.search(**kwargs)
+            except gb2260.AmbiguousRegionError:
+                # At least one match for *part*, but impossible to know
+                # which one
+                ambiguous = True
+                continue
+            except:
+                # Not ambiguous
+                continue
+            else:
+                gbcode, level = div.code, div.level
+                break
+
+        if not gbcode and not ambiguous:
+            # Not a region name → the remaining parts of *name* are the
+            # variable group. Return here.
+            return {
+                'name group': tuple(name),
+                'gbcode': 0,
+                'level': 0,
+                'region': [],
+                }
+
+        # Either *part* was matched, or it was ambiguous. Recursively match
+        # the next part(s) of *name*
+        info = _recurse(name[:-1])
+
+        # info now contains all information about the leftwards parts of
+        # *name*, including any parent regions. Append this region's name
+        info['region'].append(part)
+
+        if ambiguous:
+            # encountered AmbiguousRegionError on first try, above. Try to
+            # disambiguate now
+            for key, kwargs in _search_kwargs:
+                # NB for debugging, loop on enumerate(_search_kwargs) and
+                # update _search_kwargs_debug2
+                kwargs[key] = part
+                if info['gbcode'] > 0:
+                    # Parent information was returned with a gbcode; that must
+                    # be the parent of *part*
+                    kwargs['within'] = info['gbcode']
+
+                try:
+                    div = gb2260.divisions.search(**kwargs)
+                except:
+                    continue
+                else:
+                    gbcode, level = div.code, div.level
+                    break
+
+            # Serious problem if we haven't found anything by this point
+            if not gbcode:
+                msg = ("Couldn't match '%s' in %s under parent %d" %
+                       (part, row['name'], info['gbcode']))
+                raise ValueError(msg)
+
+        # Overwrite the gbcode and level from the recursion (if any) with the
+        # values determined at this level
+        info['gbcode'] = gbcode
+        info['level'] = level
+
+        # Back up to the previous level
+        return info
+
+    # Try the cache first
+    result = None
+    for key in map(lambda i: row['name'][-i:], (1, 2, 3)):
+            try:
+                result = _match_cache[':'.join(key)]
+            except KeyError:
+                continue
+            else:
+                result = dict(zip(('gbcode', 'level', 'region'), result))
+                result['name group'] = tuple(row['name'][:-len(key)])
+                break
+
+    if not result:
+        # Kick off the recursion
+        result = _recurse(row['name'], root=True)
+
+        # Convert region to tuple
+        result['region'] = tuple(result['region'])
+
+        # Cache the result
+        if result['gbcode'] > 0:
+            cache_val = (result['gbcode'], result['level'], result['region'])
+            _match_cache[':'.join(result['region'])] = cache_val
+
+    # Rename according to metadata
+    result['rename'] = META['rename variables'].get(
+        result['name group'], row['series code alpha'])
+
+    if not VERBOSE:
+        META['progressbar'].update(1)
+
+    return pd.Series(result)
+
+
+def _normalize_units(df, data_cols):
+    """Return a version of *df* with the same units in all rows."""
+    df.loc[:, 'unit'] = df['unit'].apply(_parse_unit)
     common = df['unit'].min()
 
     def _check_and_norm(u):
@@ -320,10 +491,10 @@ def normalize_units(df):
     if (factor.unique() == [1.]).all():
         return df
     else:
-        log.info('  normalizing units for %s series to %s',
-                 (factor != 1).sum(), common)
-        log.info('  by factors: %s', factor.unique())
-        df.iloc[:, i:] = df.iloc[:, i:].mul(factor, axis=0)
+        log.debug('  Normalizing units for %s series to %s',
+                  (factor != 1).sum(), common)
+        log.debug('  By factors: %s', factor.unique())
+        df.iloc[:, data_cols] = df.iloc[:, data_cols].mul(factor, axis=0)
 
         # Can't simply assign here; see
         # https://github.com/hgrecco/pint/issues/401
@@ -332,66 +503,33 @@ def normalize_units(df):
         return df
 
 
-def parse_unit(text):
-    return units(text.lower().replace(' ', '_'))
+def _parse_unit(text):
+    """Convert *text* into a pint.Quanitity."""
+    text = text.lower().replace(' ', '_').replace('%', 'percent')
+    return META['ureg'](text)
 
 
-def load_units(defs):
-    from io import StringIO
-    import pint
+def _read_metadata(input_dir):
+    """Read metadata.yaml"""
+    from collections import defaultdict
+    import yaml
 
-    global units
+    global META
 
-    units = pint.UnitRegistry()
-    units.load_definitions(StringIO(defs))
+    options_fn = join(input_dir, 'metadata.yaml')
+    log.info('Reading metadata from %s', options_fn)
 
+    with open(options_fn) as f:
+        META.update(yaml.load(f))
 
-def lookup_gbcode(name):
-    """Return a GB/T 2260 code for tuple *name*.
+    META['prefixes'] = defaultdict(int)
 
-    If *name* is a 2-tuple, the entries are assumed to be (province, city),
-    indicating which province the city is in, and used to constrain the
-    lookup. If it is a 1-tuple, the GB/T 2260 code for the single entry is
-    returned. Names are translated using *name_map* before lookup.
+    # Load units
+    _load_units(META['units'])
 
-    Returns None for all other or invalid values.
-
-    """
-    result = None
-    name_en = None
-    try:
-        # If only one division name is given, assume it is a province
-        # TODO make this more flexible for e.g. airport series
-        kwargs = dict(level=1)
-        if len(name) > 1:
-            kwargs['within'] = gb2260.lookup(name_en=name[-2], level=1)
-            kwargs['level'] = 2
-        name_en = NAME_MAP.get(name[-1], name[-1])
-        result = gb2260.lookup(name_en=name_en, **kwargs)
-    except LookupError:
-        pass
-
-    # commented: extremely verbose
-    # if result is not None:
-    #     log.debug("found code %d for %s" % (result, name))
-
-    return result
-
-
-def tuple_find(a, b):
-    """Find tuple in tuple.
-
-    If tuple *a* appears, in order, within tuple *b*, the index of a[0] in
-    b; else -1.
-
-    """
-    a = tuple(a)
-    b = tuple(b)
-    l_a = len(a)
-    for i in range(len(b) - l_a + 1):
-        if b[i:i+l_a] == a:
-            return i
-    return -1
+    # Invert this mapping
+    META['rename variables'] = {tuple(v): k for k, v in
+                                META['rename variables'].items()}
 
 
 if __name__ == '__main__':
@@ -399,21 +537,35 @@ if __name__ == '__main__':
 
     try:
         from _util import click_nowrap
-        click_nowrap()
+        click_nowrap()  # Prettier help output from click
     except ImportError:  # User hasn't downloaded _util.py
         pass
 
     @click.group()
     @click.option('--verbose', is_flag=True, help='Give verbose output')
     def cli(verbose):
+        global VERBOSE
+
+        VERBOSE = verbose
+
         # Configure logging
-        log.setLevel(logging.DEBUG if verbose else logging.INFO)
+        logging.getLogger().setLevel(logging.NOTSET)
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.DEBUG if verbose else logging.INFO)
+        log.addHandler(handler)
 
     @cli.command(name='import')
     @click.option('--no-cache', 'no_cache', help="don't cache imported data")
-    def _import(no_cache):
-        """Import data from TSV and update the cache."""
-        import_ceic(cache=not no_cache)
+    def _import(no_cache, output_dir=DATA_DIR):
+        """Import data from CSV and update the cache."""
+        from datetime import datetime
+
+        # Also log to file
+        log_fn = join(output_dir, datetime.now().isoformat() + '.log')
+        handler = logging.FileHandler(log_fn, mode='w')
+        log.addHandler(handler)
+
+        import_ceic(output_dir=output_dir, cache=not no_cache)
 
     @cli.command()
     def load():
