@@ -1,0 +1,1 @@
+https://arrowsmith.mit.edu:443/secure-geoserver/wfs?service=wfs&version=1.0.0&request=GetFeature&typeName=sde:SDE_DATA.CH_F7COUNTIES_2009&outputFormat=shape-zip
