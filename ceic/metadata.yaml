@@ -183,6 +183,7 @@ units: |
   person = [person]
   RMB = [currency]
   unit = [unit]
+  jan2004 = 100
 
   cub_m_mn = 1e6 * m ** 3
   ha_th = 1e3 * hectare

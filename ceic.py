@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """CEIC Data China Premium Database"""
 import logging
-from os.path import commonprefix, dirname, join
+from os.path import commonprefix, exists, dirname, join
+import pickle
 
-import gb2260
 import pandas as pd  # >= 0.20
 import pint
 import xarray as xr
-# Importing data also requires: tqdm
+# Importing data also requires: gb2260, tqdm
 
 __all__ = [
     'import_ceic',
     'load_ceic',
     ]
+
+CACHE_FORMAT = 'pkl'  # Either 'pkl' or 'nc'
 
 DATA_DIR = join(dirname(__file__), 'ceic')
 
@@ -91,19 +93,21 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
     # Concatenate to a single pd.DataFrame
     data = pd.concat(dfs)
 
+    # NB to debug, subset the data here like:
+    #     l = ['MWD', 'NUN']
+    #     data = data[data['Series Code'].str.match('.*CHA(%s)' % '|'.join(l))]
+    # or:
+    #     data = data[:5000]
+
     # Count non-zero values
     data_cols = pd.to_datetime(data.columns, errors='coerce').notnull()
     N = data.loc[:, data_cols].notnull().sum().sum()
     log.info('Total %d series, %d non-zero values', len(data), N)
 
-    # NB to debug, subset the data here like:
-    # l = ['MWD', 'NUN']
-    # data = data[data['Series Code'].str.match('.*CHA(%s)' % '|'.join(l))]
-
     # Rename columns to lower case
     data.columns = data.columns.to_series().apply(str.lower)
 
-    log.info("Transform metadata columns")
+    log.info('Transform metadata columns')
 
     # Strip a preceding 'CN: ' from the name column, convert to list
     data['name'] = data['name'].str.lstrip('CN:').str.lstrip().str.split(': ')
@@ -151,17 +155,22 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
     if not VERBOSE:
         META['progressbar'].close()
 
-    log.debug('Name part searches 1: %r', _search_kwargs_debug1)
-    log.debug('Name part searches 2: %r', _search_kwargs_debug2)
+    # commented: for debugging only, see below
+    # log.debug('Name part searches 1: %r', _search_kwargs_debug1)
+    # log.debug('Name part searches 2: %r', _search_kwargs_debug2)
 
-    log.info('Grouping into variables')
+    log.info('Group into variables')
     # regional detail → list of xr.DataArray
     das = {level: [] for level in (0, 1, 2, 3)}
-    for key, df in data.groupby('name group'):
-        message = []  # Accumulate messages to log on error
-
-        message.append('Variable: %s' % ': '.join(key))
-        message.append('%s series' % len(df))
+    groups = data.groupby('name group')
+    if not VERBOSE:
+        groups = tqdm(groups)
+    for key, df in groups:
+        # Accumulate messages to log on error
+        message = [
+            'Variable: %s' % ': '.join(key),
+            '%s series' % len(df),
+            ]
 
         try:
             # Handle duplicate series
@@ -176,7 +185,7 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
             try:
                 df = _normalize_units(df, data_cols)
             except pint.errors.UndefinedUnitError as e:
-                raise VariableImportError('Skipping (units): %s' % e)
+                raise VariableImportError('Skip (unknown units): %s' % e)
 
             # Construct metadata
             attrs, name = _make_attrs(df, key)
@@ -196,44 +205,57 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
         # Group to national, provincial, etc. levels
         for level, level_df in values.groupby('level'):
             # Convert to an xarray object
-            if level == -1:
-                level = 0
-                raise ValueError(level_df)
             if level < 1:
                 level_df = level_df.iloc[0, :]
             das[level].append(xr.DataArray(level_df, attrs=attrs, name=name))
 
-    # Done grouping. Merge the xr.DataArrays into xr.Datasets for each level
-    dss = {k: xr.merge(v).dropna(dim='period', how='all') for k, v in
-           das.items()}
+    # Done grouping
 
-    # Cache result
-    total = 0
-    for level, ds in dss.items():
-        # Some diagnostic information
+    # For each level of aggregation, merge the xr.DataArrays into one
+    # xr.Dataset and cache it
+    dss = {}
+    count = dict(variables=0, values=0)
+
+    for level, arrays in das.items():
         log.info('At administrative level %d', level)
-        log.debug('Resulting xarray.Dataset:\n%s', ds)
-        notnull = ds.notnull().sum()
-        total += sum([notnull[x] for x in notnull])
+
+        if len(arrays) == 0:
+            log.info('No variables.')
+            continue
+
+        ds = xr.merge(arrays).dropna(dim='period', how='all')
+
         log.info('Number of variables: %d', len(ds))
-        log.info('Number of non-null values: %d', total)
-        log.debug(notnull)
+        # log.debug('Resulting xarray.Dataset:\n%s', ds)  # *extremely* verbose
 
-        if cache:
-            out_fn = join(output_dir, 'ceic-%d.nc' % level)
-            log.info('Write to %s', out_fn)
+        # Count variables and non-null values
+        count['variables'] += len(ds)
+        notnull = ds.notnull().sum()
+        values = sum([notnull[x] for x in notnull])
+        count['values'] += values
 
-            # Serialize units
-            for _, var in ds.data_vars.items():
-                var.attrs['unit'] = str(var.attrs['unit'])
-            ds.attrs['units'] = META['units']
+        log.info('Number of non-null values: %d', values)
+        # log.debug(notnull)  # *extremely* verbose
 
-            ds.to_netcdf(out_fn)
-        else:
+        if not cache:
             log.info('Skip output to cache')
+            continue
 
-    log.info('Kept %2f%% of input data', 100 * total / N)
-    log.info('Done.')
+        _serialize_units(ds)
+
+        out_fn = join(output_dir, 'ceic-{}.{}'.format(level, CACHE_FORMAT))
+        log.info('Write to %s', out_fn)
+
+        if CACHE_FORMAT == 'nc':
+            ds.to_netcdf(out_fn)
+        elif CACHE_FORMAT == 'pkl':
+            pickle.dump(ds, open(out_fn, 'wb'))
+
+        log.info('…done.')
+        dss[level] = ds
+
+    log.info('Imported %d variables, %d values (%.2f%% of input)',
+             count['variables'], count['values'], 100 * count['values'] / N)
 
     # Return the dataframe
     return dss
@@ -244,23 +266,34 @@ def load_ceic(input_dir=DATA_DIR):
 
     Data is returned as an xarray.Dataset.
 
-    If cached data is stored 'ceic.nc' in the directory *input_dir*, this
-    data is read and returned. Otherwise, the data is imported by calling
-    import_ceic(), with *debug* as an argument.
+    If cached data exists in *input_dir*/ceic-[0123].nc, it is read and
+    returned. Otherwise, the data is imported by calling import_ceic(), with
+    *debug* as an argument.
     """
-    cache_fn = join(input_dir, 'ceic.nc')
-    log.debug('Reading from %s…', cache_fn)
-    try:
-        result = xr.open_dataset(cache_fn)
-        log.debug('…done')
-        log.debug('Unserializing units')
-        _load_units(result.attrs['units'])
-        for _, var in result.data_vars.items():
-            var.attrs['unit'] = META['ureg'](var.attrs['unit'])
-    except RuntimeError:
-        log.debug('Missing, importing directly')
-        result = import_ceic()
-    return result
+    # Names of cached files
+    filenames = [join(input_dir, 'ceic-{}.{}'.format(level, CACHE_FORMAT))
+                 for level in (0, 1, 2, 3)]
+
+    if not all(map(exists, filenames)):
+        import_ceic(input_dir=input_dir, output_dir=input_dir)
+
+    dss = {}  # Dictionary of xr.Dataset
+
+    for level, filename in enumerate(filenames):
+        log.debug('Read from %s…', filename)
+
+        if CACHE_FORMAT == 'nc':
+            ds = xr.open_dataset(filename)
+        elif CACHE_FORMAT == 'pkl':
+            ds = pickle.load(open(filename, 'rb'))
+
+        _unserialize_units(ds, level == 0)
+
+        log.debug('…done.')
+
+        dss[level] = ds
+
+    return dss
 
 
 def _deduplicate(df):
@@ -275,12 +308,12 @@ def _deduplicate(df):
         duplicates[dupe_key] = len(dupe_df)
 
     if skip:
-        raise VariableImportError('Skipping (duplicates): %s' % ' '.join(
+        raise VariableImportError('Skip (duplicates): %s' % ' '.join(
             ['%d (%d)' % (k, v) for k, v in duplicates.items()]))
 
     df = df.drop_duplicates('gbcode')  # FIXME
     if len(df) == 0:
-        raise VariableImportError('Skipping (0 rows after dropping duplicates')
+        raise VariableImportError('Skip (0 rows after dropping duplicates')
 
     return df
 
@@ -323,7 +356,7 @@ def _make_attrs(df, key):
         if len(unique_value) == 1:
             attrs[a] = unique_value[0]
         else:
-            raise VariableImportError('Skipping (multiple values for %s): %s'
+            raise VariableImportError('Skip (multiple values for %s): %s'
                                       % (a, unique_value))
 
     # Get the alias for this variable
@@ -332,11 +365,13 @@ def _make_attrs(df, key):
     if name is None:
         # No alias.
         codes = list(df['series code alpha'])
-        log.debug('Series code alpha: %s' % ' '.join(codes))
 
         # Use _get_name to construct a name
         name = _get_name(commonprefix(codes))
-        log.debug('Use prefix: %s' % name)
+
+        if len(codes) > 1:
+            log.debug('Use common prefix %s for codes: %s', name,
+                      ' '.join(codes))
 
     return attrs, name
 
@@ -347,10 +382,11 @@ _search_kwargs = [
     ('name_pinyin', dict(partial=True, level='highest')),  # e.g. Beijing
     ('name_en', dict(partial=True, level='highest')),  # e.g. Inner Mongolia
     ]
-# For 26481 series                   Without caching:      With caching:
-_search_kwargs_debug1 = [0, 0, 0]  # [77551, 52170, 30765] [11536, 11474, 6406]
-_search_kwargs_debug2 = [0, 0, 0]  # [21405, 15342, 3909]  [18, 16, 0]
 _match_cache = {}
+
+# For 26481 series                   Without caching:      With caching:
+# _search_kwargs_debug1 = [0, 0, 0]  # [77551 52170 30765] [11536 11474 6406]
+# _search_kwargs_debug2 = [0, 0, 0]  # [21405 15342  3909] [   18    16    0]
 
 
 def _match_gbcode(row):
@@ -363,6 +399,8 @@ def _match_gbcode(row):
     - region
 
     """
+    import gb2260
+
     def _recurse(name, root=False):
         """Recursive method for matching *name*."""
         part = META['rename regions'].get(name[-1], name[-1])
@@ -517,7 +555,7 @@ def _read_metadata(input_dir):
     global META
 
     options_fn = join(input_dir, 'metadata.yaml')
-    log.info('Reading metadata from %s', options_fn)
+    log.info('Read metadata from %s', options_fn)
 
     with open(options_fn) as f:
         META.update(yaml.load(f))
@@ -530,6 +568,20 @@ def _read_metadata(input_dir):
     # Invert this mapping
     META['rename variables'] = {tuple(v): k for k, v in
                                 META['rename variables'].items()}
+
+
+def _serialize_units(ds):
+    for _, var in ds.data_vars.items():
+        var.attrs['unit'] = str(var.attrs['unit'])
+    ds.attrs['units'] = META['units']
+
+
+def _unserialize_units(ds, update_registry=False):
+    if update_registry:
+        _load_units(ds.attrs['units'])
+
+    for _, var in ds.data_vars.items():
+        var.attrs['unit'] = META['ureg'](var.attrs['unit'])
 
 
 if __name__ == '__main__':
@@ -570,7 +622,8 @@ if __name__ == '__main__':
     @cli.command()
     def load():
         """Load data from the cache and exit."""
-        ds = load_ceic()
-        print(ds, ds['pop'], sep='\n')
+        dss = load_ceic()
+        print(dss.keys())
+        print(dss[3])
 
     cli()
