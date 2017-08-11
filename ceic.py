@@ -335,6 +335,28 @@ def load_ceic(input_dir=DATA_DIR):
     return data
 
 
+def select(data, var):
+    """Select only *var* from *data*
+
+    Returns an xarray.Dataset containing the variable *var*. *data* is a dict
+    of {level: xr.Dataset}, such as returned by load_ceic().
+    """
+    to_concat = []
+
+    for level in sorted(data.keys()):
+        # Select only the variable of interest
+        ds = data[level][var]
+
+        # Add the 'gbcode' dimension to data at the national level
+        #   https://github.com/pydata/xarray/issues/170
+        if level == 0:
+            ds = xr.concat([ds], dim=pd.Index([0], name='gbcode'))
+
+        to_concat.append(ds)
+
+    return xr.concat(to_concat, dim='gbcode')
+
+
 def _deduplicate(df):
     """Handle duplicates in *df*, returning a deduplicated pd.DataFrame."""
     # Reset the index to unique integers
@@ -724,8 +746,7 @@ if __name__ == '__main__':
     @cli.command()
     def load():
         """Load data from the cache and exit."""
-        print(dss.keys())
-        print(dss[3])
         data = load_ceic()
+        print(select(data, 'pop'))
 
     cli()
