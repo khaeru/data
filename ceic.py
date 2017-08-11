@@ -321,40 +321,48 @@ def load_ceic(input_dir=DATA_DIR):
         elif CACHE_FORMAT == 'pkl':
             ds = pickle.load(open(filename, 'rb'))
 
-        log.debug('…done.')
+        log.debug('  unserialize units')
 
         if level == 0:
             _load_units(ds.attrs['units'])
 
-        log.debug('Unserialize units')
         _unserialize_units(ds)
-        log.debug('…done.')
+        log.debug('  …done.')
 
         data[level] = ds
 
     return data
 
 
-def select(data, var):
-    """Select only *var* from *data*
+def select(data, vars):
+    """Select only *vars* from *data*
 
-    Returns an xarray.Dataset containing the variable *var*. *data* is a dict
-    of {level: xr.Dataset}, such as returned by load_ceic().
+    Returns an xarray.Dataset containing the variables *vars*. *data* is a dict
+    of {level: xr.Dataset}, such as returned by load_ceic(). Data at the
+    national level is assigned 'gbcode' 0.
     """
-    to_concat = []
+    # TODO merge metadata in Dataset- and variable-level attrs
+    #      - can use logic like in _make_attrs()
+
+    # Process arguments
+    if not isinstance(vars, list):
+        vars = [vars]
+
+    to_combine = []
 
     for level in sorted(data.keys()):
         # Select only the variable of interest
-        ds = data[level][var]
+        level_vars = list(filter(lambda v: v in data[level].data_vars, vars))
+        ds = data[level][level_vars]
 
         # Add the 'gbcode' dimension to data at the national level
         #   https://github.com/pydata/xarray/issues/170
         if level == 0:
             ds = xr.concat([ds], dim=pd.Index([0], name='gbcode'))
 
-        to_concat.append(ds)
+        to_combine.append(ds)
 
-    return xr.concat(to_concat, dim='gbcode')
+    return xr.auto_combine(to_combine, concat_dim='gbcode')
 
 
 def _deduplicate(df):
@@ -744,9 +752,14 @@ if __name__ == '__main__':
         import_ceic(output_dir=output_dir, cache=not no_cache)
 
     @cli.command()
-    def load():
+    def demo():
         """Load data from the cache and exit."""
         data = load_ceic()
-        print(select(data, 'pop'))
+
+        s1 = select(data, 'pop')
+        print(s1, s1['pop'])
+
+        s2 = select(data, ['pop', 'pop_non_ag'])
+        print(s2, s2['pop_non_ag'])
 
     cli()
