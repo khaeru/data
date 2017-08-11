@@ -276,7 +276,7 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
             log.info('  skip output to cache.')
             continue
 
-        _serialize_units(ds)
+        ds = _serialize_units(ds)
 
         out_fn = join(output_dir, 'ceic-{}.{}'.format(level, CACHE_FORMAT))
         log.info('  write to %s', out_fn)
@@ -311,7 +311,7 @@ def load_ceic(input_dir=DATA_DIR):
     if not all(map(exists, filenames)):
         import_ceic(input_dir=input_dir, output_dir=input_dir)
 
-    dss = {}  # Dictionary of xr.Dataset
+    data = dict()  # of xr.Dataset
 
     for level, filename in enumerate(filenames):
         log.debug('Read from %s…', filename)
@@ -330,9 +330,9 @@ def load_ceic(input_dir=DATA_DIR):
         _unserialize_units(ds)
         log.debug('…done.')
 
-        dss[level] = ds
+        data[level] = ds
 
-    return dss
+    return data
 
 
 def _deduplicate(df):
@@ -724,8 +724,8 @@ if __name__ == '__main__':
     @cli.command()
     def load():
         """Load data from the cache and exit."""
-        dss = load_ceic()
         print(dss.keys())
         print(dss[3])
+        data = load_ceic()
 
     cli()
