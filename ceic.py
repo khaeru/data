@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """CEIC Data China Premium Database"""
+from functools import lru_cache
 import logging
 from os.path import commonprefix, exists, dirname, join
 import pickle
@@ -78,39 +79,50 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
     # Read data from each CSV file in input_dir
     log.info('Read data')
     for fn in glob(join(input_dir, '*.csv')):
-        log.info('  from %s', fn)
+        log.debug('  from %s', fn)
 
-        # Read the CSV fill, drop empty rows and columns, and remove exact
+        # Read the CSV file, drop empty rows and columns, and remove exact
         # duplicate rows
         tmp = pd.read_csv(fn).dropna(axis=[0, 1], how='all') \
                 .drop_duplicates() \
                 .rename(columns={'': 'Name', 'Unnamed: 0': 'Name'})
 
-        log.info('  %d series', len(tmp))
+        log.debug('  %d series', len(tmp))
 
         dfs.append(tmp)
 
     # Concatenate to a single pd.DataFrame
     data = pd.concat(dfs)
 
+    # Rename columns to lower case
+    data.columns = data.columns.to_series().str.lower()
+
     # NB to debug, subset the data here like:
-    #     l = ['MWD', 'NUN']
-    #     data = data[data['Series Code'].str.match('.*CHA(%s)' % '|'.join(l))]
+    #    l = ['MWD', 'NUN']
+    #    data = data[data['series code'].str.match('.*CHA(%s)' % '|'.join(l))]
     # or:
-    #     data = data[:5000]
+    #    i, stride = 0, 10000
+    #    data = data[i*stride:(i+1)*stride]
+
+    # Drop rows that are entirely duplicated (e.g. exported in more than one
+    # CSV file)
+    dedupe_cols = set(data.columns) - {'first obs. date', 'last obs. date',
+                                       'last update time'}
+    data.drop_duplicates(dedupe_cols, inplace=True)
 
     # Count non-zero values
     data_cols = pd.to_datetime(data.columns, errors='coerce').notnull()
     N = data.loc[:, data_cols].notnull().sum().sum()
-    log.info('Total %d series, %d non-zero values', len(data), N)
-
-    # Rename columns to lower case
-    data.columns = data.columns.to_series().apply(str.lower)
+    log.info('  total %d series, %d non-zero values', len(data), N)
 
     log.info('Transform metadata columns')
 
-    # Strip a preceding 'CN: ' from the name column, convert to list
-    data['name'] = data['name'].str.lstrip('CN:').str.lstrip().str.split(': ')
+    # Strip a preceding 'CN: ' from the name column, convert to list, and
+    # remove any empty parts caused by '… : : …'
+    data['name'] = (data['name'].str.lstrip('CN:')
+                                .str.lstrip()
+                                .str.split(': ')
+                                .apply(lambda n: list(filter(len, n))))
 
     # Convert the series code column ('1234 (ABCD)') and split into separate
     # columns
@@ -124,17 +136,27 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
         data['series code'].str.extract(sc_regex, expand=True),
         ], axis=1).rename(columns=sc_rename)
 
+    # Frequency to lower case
+    data['frequency'] = data['frequency'].str.lower()
+
     # Convert types
     for s in ('first', 'last'):
         col = '%s obs. date' % s
         data[col] = pd.to_datetime(data[col], errors='coerce')
 
+    # Parse units
+    data['unit'] = (data['unit'].str.lower()
+                                .str.replace(' ', '_')
+                                .str.replace('%', 'percent')
+                                .apply(_parse_unit))
+
     # Make the alpha series code the index
-    data.set_index('series code alpha', drop=False)
+    data.set_index('series code alpha', drop=False, inplace=True)
+    data.sort_index(inplace=True)
 
     log.info('Preprocess rules from file:')
     for rule in META['preprocess']:
-        log.info(rule)
+        log.info('  %s', rule)
 
         # Transform the rule into Python expressions
         predicate = eval('lambda row: %s' % rule['predicate'])
@@ -146,58 +168,65 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
         data[mask] = data[mask].apply(env['transform'], axis=1)
 
     # Add columns 'name group', 'region', 'gbcode', 'level'
-    log.info('Compute indexes')
-
-    if not VERBOSE:
-        META['progressbar'] = tqdm(total=len(data))
+    META['progressbar'] = tqdm(total=len(data), desc='Compute indexes')
     data = pd.concat([data, data.apply(_match_gbcode, axis=1)], axis=1)
-
-    if not VERBOSE:
-        META['progressbar'].close()
+    META['progressbar'].close()
 
     # commented: for debugging only, see below
     # log.debug('Name part searches 1: %r', _search_kwargs_debug1)
     # log.debug('Name part searches 2: %r', _search_kwargs_debug2)
 
-    log.info('Group into variables')
     # regional detail → list of xr.DataArray
     das = {level: [] for level in (0, 1, 2, 3)}
-    groups = data.groupby('name group')
-    if not VERBOSE:
-        groups = tqdm(groups)
-    for key, df in groups:
+
+    # Masks for columns in the data
+    data_cols = pd.to_datetime(data.columns, errors='coerce').notnull()
+    value_cols = data_cols | (data.columns == 'level')
+
+    names = {}
+
+    def save_name(row, attrs, name):
+        """Record variable information to be saved to a log file."""
+        names[row['series code alpha']] = [
+            name,
+            row['gbcode'],
+            row['level'],
+            attrs['name'],
+            row['name']
+            ]
+
+    for key, df in tqdm(data.groupby(['name group', 'frequency']),
+                        desc='Group into variables'):
+        name_group, _ = key
+
         # Accumulate messages to log on error
         message = [
-            'Variable: %s' % ': '.join(key),
+            'Variable: %s' % ': '.join(name_group),
             '%s series' % len(df),
             ]
 
         try:
-            # Handle duplicate series
-            df = _deduplicate(df)
-
             # Index on GB codes
-            df = df.set_index('gbcode', drop=False)
-
-            # A mask for data columns plus 'level'
-            data_cols = pd.to_datetime(df.columns, errors='coerce').notnull()
-
             try:
-                df = _normalize_units(df, data_cols)
-            except pint.errors.UndefinedUnitError as e:
-                raise VariableImportError('Skip (unknown units): %s' % e)
+                df.set_index('gbcode', drop=False, inplace=True,
+                             verify_integrity=True)
+            except ValueError:
+                # Handle duplicate series
+                df = _deduplicate(df)
+                df.set_index('gbcode', drop=False, inplace=True)
+
+            df = _normalize_units(df, data_cols)
 
             # Construct metadata
-            attrs, name = _make_attrs(df, key)
+            attrs, name = _make_attrs(df, name_group)
+            df.apply(save_name, axis=1, args=(attrs, name))
         except VariableImportError as e:
-            log.warning('\n  '.join(message + list(e.args)))
+            log.debug('\n  '.join(message + list(e.args)))
+            df.apply(save_name, axis=1, args=(dict(name='Skipped!'), '--'))
             continue
 
-        # Select values (discard metadata except 'level'), and drop nulls
-        data_cols = data_cols | (df.columns == 'level')
-        values = df.iloc[:, data_cols].dropna(axis=1, how='all')
-
-        # Convert column index to pd.Period
+        # Select values and set indexes
+        values = df.iloc[:, value_cols]
         values.columns = values.columns.astype(pd.Period)
         values.columns.name = 'period'
         values.index.name = 'gbcode'
@@ -210,6 +239,12 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
             das[level].append(xr.DataArray(level_df, attrs=attrs, name=name))
 
     # Done grouping
+    names = pd.DataFrame(names).T
+    names.columns = ['variable', 'gbcode', 'level', 'var_desc', 'orig_name']
+    names.index.name = 'series'
+
+    with open(join(output_dir, 'names.tsv'), 'w') as f:
+        names.to_csv(f, sep='\t')
 
     # For each level of aggregation, merge the xr.DataArrays into one
     # xr.Dataset and cache it
@@ -217,15 +252,15 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
     count = dict(variables=0, values=0)
 
     for level, arrays in das.items():
-        log.info('At administrative level %d', level)
+        log.info('At administrative level %d:', level)
 
         if len(arrays) == 0:
-            log.info('No variables.')
+            log.info('  no variables.')
             continue
 
         ds = xr.merge(arrays).dropna(dim='period', how='all')
 
-        log.info('Number of variables: %d', len(ds))
+        log.info('  %d variables', len(ds))
         # log.debug('Resulting xarray.Dataset:\n%s', ds)  # *extremely* verbose
 
         # Count variables and non-null values
@@ -234,30 +269,29 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
         values = sum([notnull[x] for x in notnull])
         count['values'] += values
 
-        log.info('Number of non-null values: %d', values)
+        log.info('  %d non-null values', values)
         # log.debug(notnull)  # *extremely* verbose
 
         if not cache:
-            log.info('Skip output to cache')
+            log.info('  skip output to cache.')
             continue
 
         _serialize_units(ds)
 
         out_fn = join(output_dir, 'ceic-{}.{}'.format(level, CACHE_FORMAT))
-        log.info('Write to %s', out_fn)
+        log.info('  write to %s', out_fn)
 
         if CACHE_FORMAT == 'nc':
             ds.to_netcdf(out_fn)
         elif CACHE_FORMAT == 'pkl':
             pickle.dump(ds, open(out_fn, 'wb'))
 
-        log.info('…done.')
+        log.info('  …done.')
         dss[level] = ds
 
     log.info('Imported %d variables, %d values (%.2f%% of input)',
              count['variables'], count['values'], 100 * count['values'] / N)
 
-    # Return the dataframe
     return dss
 
 
@@ -287,8 +321,13 @@ def load_ceic(input_dir=DATA_DIR):
         elif CACHE_FORMAT == 'pkl':
             ds = pickle.load(open(filename, 'rb'))
 
-        _unserialize_units(ds, level == 0)
+        log.debug('…done.')
 
+        if level == 0:
+            _load_units(ds.attrs['units'])
+
+        log.debug('Unserialize units')
+        _unserialize_units(ds)
         log.debug('…done.')
 
         dss[level] = ds
@@ -298,24 +337,45 @@ def load_ceic(input_dir=DATA_DIR):
 
 def _deduplicate(df):
     """Handle duplicates in *df*, returning a deduplicated pd.DataFrame."""
-    skip = False
+    # Reset the index to unique integers
+    df.reset_index(drop=True, inplace=True)
 
-    duplicates = {}
-    for dupe_key, dupe_df in df.groupby('gbcode'):
+    drop = set()
+    for gbcode, dupe_df in df.groupby('gbcode'):
         if len(dupe_df) == 1:
             continue
 
-        duplicates[dupe_key] = len(dupe_df)
+        # Find columns with distinct values
+        unique_columns = []
+        for column in dupe_df.dropna(how='all', axis=1).columns:
+            try:
+                if len(dupe_df[column].unique()) > 1:
+                    unique_columns.append(column)
+            except TypeError:
+                # Column containing an unhashable type like 'list'
+                continue
 
-    if skip:
-        raise VariableImportError('Skip (duplicates): %s' % ' '.join(
-            ['%d (%d)' % (k, v) for k, v in duplicates.items()]))
+        # If only one row has all these columns filled, and others contain one
+        # or more NaNs, keep that row
+        subset = dupe_df.loc[:, unique_columns]
+        dropna = subset.dropna()
+        if len(dropna) == 1:
+            drop |= set(subset.index) - set(dropna.index)
+            continue
 
-    df = df.drop_duplicates('gbcode')  # FIXME
-    if len(df) == 0:
-        raise VariableImportError('Skip (0 rows after dropping duplicates')
+        # If rows were updated at different times, keep the most recent
+        if 'last update time' in unique_columns:
+            drop |= set(dupe_df.sort_values('last update time',
+                                            ascending=False)[1:].index)
+            continue
 
-    return df
+        # At this point, haven't been able to deduplicate for this gbcode
+        raise VariableImportError(('Skip (unresolved duplicate):\n  gbcode = '
+                                   '%d\n  %s') %
+                                  (gbcode,
+                                   '|'.join(dupe_df['series code alpha'])))
+
+    return df.drop(drop)
 
 
 def _get_name(name):
@@ -328,13 +388,14 @@ def _load_units(defs):
     """Set up a pint.UnitRegsitry from the string unit *defs*."""
     from io import StringIO
 
-    import pint
-
     global META
 
     # Load units
     META['ureg'] = pint.UnitRegistry()
     META['ureg'].load_definitions(StringIO(defs))
+
+    # Clear cache
+    _parse_unit.cache_clear()
 
 
 def _make_attrs(df, key):
@@ -352,7 +413,7 @@ def _make_attrs(df, key):
 
     # It's an error to have non-unique values for any of these
     for a in ['country', 'frequency', 'status']:
-        unique_value = df[a].str.lower().unique()
+        unique_value = df[a].unique()
         if len(unique_value) == 1:
             attrs[a] = unique_value[0]
         else:
@@ -369,20 +430,17 @@ def _make_attrs(df, key):
         # Use _get_name to construct a name
         name = _get_name(commonprefix(codes))
 
-        if len(codes) > 1:
-            log.debug('Use common prefix %s for codes: %s', name,
-                      ' '.join(codes))
-
     return attrs, name
 
 
 # For disambiguating
-_search_kwargs = [
+_search_kwargs = (
+    ('name_en', dict()),
     ('name_pinyin', dict(partial=True)),
-    ('name_pinyin', dict(partial=True, level='highest')),  # e.g. Beijing
-    ('name_en', dict(partial=True, level='highest')),  # e.g. Inner Mongolia
-    ]
+    ('name_en', dict(partial=True)),
+    )
 _match_cache = {}
+_nonmatch = set()
 
 # For 26481 series                   Without caching:      With caching:
 # _search_kwargs_debug1 = [0, 0, 0]  # [77551 52170 30765] [11536 11474 6406]
@@ -404,6 +462,15 @@ def _match_gbcode(row):
     def _recurse(name, root=False):
         """Recursive method for matching *name*."""
         part = META['rename regions'].get(name[-1], name[-1])
+
+        if part in _nonmatch:
+            return {
+                'name group': tuple(name),
+                'gbcode': 0,
+                'level': 0,
+                'region': [],
+                }
+
         info = None
         gbcode = 0
         level = 0
@@ -411,16 +478,18 @@ def _match_gbcode(row):
         # First step: try to look up the last part of *name*
         ambiguous = False
         for key, kwargs in _search_kwargs:
+            kwargs = kwargs.copy()
             # NB for debugging, loop on enumerate(_search_kwargs) and update
             # _search_kwargs_debug1
             kwargs[key] = part
+
             try:
                 div = gb2260.divisions.search(**kwargs)
             except gb2260.AmbiguousRegionError:
                 # At least one match for *part*, but impossible to know
                 # which one
                 ambiguous = True
-                continue
+                break
             except:
                 # Not ambiguous
                 continue
@@ -431,6 +500,7 @@ def _match_gbcode(row):
         if not gbcode and not ambiguous:
             # Not a region name → the remaining parts of *name* are the
             # variable group. Return here.
+            _nonmatch.add(part)
             return {
                 'name group': tuple(name),
                 'gbcode': 0,
@@ -446,10 +516,12 @@ def _match_gbcode(row):
         # *name*, including any parent regions. Append this region's name
         info['region'].append(part)
 
-        if ambiguous:
+        if ambiguous or (info['gbcode'] > 0 and
+                         not gb2260.within(gbcode, info['gbcode'])):
             # encountered AmbiguousRegionError on first try, above. Try to
             # disambiguate now
             for key, kwargs in _search_kwargs:
+                kwargs = kwargs.copy()
                 # NB for debugging, loop on enumerate(_search_kwargs) and
                 # update _search_kwargs_debug2
                 kwargs[key] = part
@@ -457,6 +529,10 @@ def _match_gbcode(row):
                     # Parent information was returned with a gbcode; that must
                     # be the parent of *part*
                     kwargs['within'] = info['gbcode']
+                    if info['gbcode'] not in (110000, 120000, 310000, 500000):
+                        kwargs['level'] = info['level'] + 1
+                else:
+                    kwargs['level'] = 'highest'
 
                 try:
                     div = gb2260.divisions.search(**kwargs)
@@ -480,17 +556,35 @@ def _match_gbcode(row):
         # Back up to the previous level
         return info
 
-    # Try the cache first
+    # Main match algorithm
     result = None
-    for key in map(lambda i: row['name'][-i:], (1, 2, 3)):
-            try:
-                result = _match_cache[':'.join(key)]
-            except KeyError:
-                continue
-            else:
-                result = dict(zip(('gbcode', 'level', 'region'), result))
-                result['name group'] = tuple(row['name'][:-len(key)])
-                break
+    should_cache = True
+
+    # Lookup the last 3, 2 and then 1 part of the name
+    for parts in map(lambda i: row['name'][-i:], (3, 2, 1)):
+        key = ':'.join(parts)
+
+        # In the cache
+        try:
+            result = _match_cache[key]
+            result['name group'] = tuple(row['name'][:-len(parts)])
+            should_cache = False
+            break
+        except KeyError:
+            pass
+
+        # In the missing regions table of the configuration file
+        try:
+            gbcode = META['missing regions'][key]
+            result = {
+                'gbcode': gbcode,
+                'level': gb2260.level(gbcode) if gbcode else 0,
+                'region': key,
+                'name group': tuple(row['name'][:-len(key)]),
+                }
+            break
+        except KeyError:
+            pass
 
     if not result:
         # Kick off the recursion
@@ -499,24 +593,22 @@ def _match_gbcode(row):
         # Convert region to tuple
         result['region'] = tuple(result['region'])
 
-        # Cache the result
-        if result['gbcode'] > 0:
-            cache_val = (result['gbcode'], result['level'], result['region'])
-            _match_cache[':'.join(result['region'])] = cache_val
+    # Cache the result
+    if should_cache and result['gbcode'] > 0:
+        cache_val = {k: result[k] for k in ('gbcode', 'level', 'region')}
+        _match_cache[':'.join(result['region'])] = cache_val
 
     # Rename according to metadata
     result['rename'] = META['rename variables'].get(
         result['name group'], row['series code alpha'])
 
-    if not VERBOSE:
-        META['progressbar'].update(1)
+    META['progressbar'].update(1)
 
     return pd.Series(result)
 
 
 def _normalize_units(df, data_cols):
     """Return a version of *df* with the same units in all rows."""
-    df.loc[:, 'unit'] = df['unit'].apply(_parse_unit)
     common = df['unit'].min()
 
     def _check_and_norm(u):
@@ -532,18 +624,19 @@ def _normalize_units(df, data_cols):
         log.debug('  Normalizing units for %s series to %s',
                   (factor != 1).sum(), common)
         log.debug('  By factors: %s', factor.unique())
-        df.iloc[:, data_cols] = df.iloc[:, data_cols].mul(factor, axis=0)
+        result = df.copy()  # avoid a SettingWithCopyWarning
+        result.iloc[:, data_cols] = df.iloc[:, data_cols].mul(factor, axis=0)
 
         # Can't simply assign here; see
         # https://github.com/hgrecco/pint/issues/401
         for label in df.index:
-            df.set_value(label, 'unit', common)
-        return df
+            result.set_value(label, 'unit', common)
+        return result
 
 
+@lru_cache()
 def _parse_unit(text):
-    """Convert *text* into a pint.Quanitity."""
-    text = text.lower().replace(' ', '_').replace('%', 'percent')
+    """Convert *text* into a pint.Quantity."""
     return META['ureg'](text)
 
 
@@ -571,17 +664,23 @@ def _read_metadata(input_dir):
 
 
 def _serialize_units(ds):
-    for _, var in ds.data_vars.items():
-        var.attrs['unit'] = str(var.attrs['unit'])
+    def serialize(da):
+        da.attrs['unit'] = str(da.attrs['unit'])
+        return da
+
+    ds = ds.apply(serialize, keep_attrs=True)
+
     ds.attrs['units'] = META['units']
 
+    return ds
 
-def _unserialize_units(ds, update_registry=False):
-    if update_registry:
-        _load_units(ds.attrs['units'])
 
-    for _, var in ds.data_vars.items():
-        var.attrs['unit'] = META['ureg'](var.attrs['unit'])
+def _unserialize_units(ds):
+    def unserialize(da):
+        da.attrs['unit'] = _parse_unit(da.attrs['unit'])
+        return da
+
+    return ds.apply(unserialize, keep_attrs=True)
 
 
 if __name__ == '__main__':
@@ -607,15 +706,18 @@ if __name__ == '__main__':
         log.addHandler(handler)
 
     @cli.command(name='import')
-    @click.option('--no-cache', 'no_cache', help="don't cache imported data")
-    def _import(no_cache, output_dir=DATA_DIR):
+    @click.option('--no-cache', 'no_cache', is_flag=True,
+                  help="don't cache imported data")
+    def import_command(no_cache, output_dir=DATA_DIR):
         """Import data from CSV and update the cache."""
         from datetime import datetime
 
         # Also log to file
-        log_fn = join(output_dir, datetime.now().isoformat() + '.log')
+        log_fn = join(output_dir, 'import.log')
         handler = logging.FileHandler(log_fn, mode='w')
         log.addHandler(handler)
+
+        log.debug(datetime.now().isoformat())
 
         import_ceic(output_dir=output_dir, cache=not no_cache)
 

@@ -1,6 +1,9 @@
 # Translations for CEIC data base city names which do not match official
 # names. Mostly these different romanizations for names in minority languages.
 rename regions:
+  Aba: Aba Zangzu Qiangzu  # Sichuan (to disambiguate with its subdivision)
+  Aksu: Aksu diqu  # Xinjiang (to disambiguate with its subdivision)
+  Altay: Altay diqu  # Xinjiang (to disambiguate with its subdivision)
   Aletai: Altay  # Altay, Xinjiang
   Atushi: Artux shi  # Kizilsu Kirgiz, Xinjiang
   Baxiu: Basu  # Qamdu, Tibet
@@ -11,14 +14,16 @@ rename regions:
   Chengduo: Chenduo  # Yushu, Qinghai
   Dacheng: Daicheng  # Langfang, Hebei
   Danling: Danleng  # Meishan, Sichuan
+  Deqin: Deqen  # Diqing, Yunnan
   Donge: Donga  # Liaocheng, Shandong
   Dujun: Duyun  # South Guizhou, Guizhou
   Erdos: Ordos  # Inner Mongolia
   Fanshi: Fanzhi  # Xinzhou, SX
   Fuijian: Fujian
   Fuxin Mongolian:  Fuxin Mongolzu  # Fuxin, Liaoning
+  Hami: Hami diqu  # Xinjiang (to disambiguate with its subdivision)
   Hetian City: Hetian shi  # Hotan, Xinjiang
-  Hetian County: Hetian  # Hotan, Xinjiang
+  Honghe: Honghe Ha'nizu Yizu  # Yunnan (to disambiguate with its subdivision)
   Junlian: Yunlian  # Yibin, Sichuan
   Kashi: Kaxgar  # Xinjiang
   Kazuo:  Kalaqin zuoyi  # Chaoyang, Liaoning
@@ -27,7 +32,6 @@ rename regions:
   Lindian:  Lindain  # Daqing, Heilongjiang
   Lingtao: Lintao  # Dingxi, Gansu
   Linxia City: Linxia shi  # Linxia, Gansu
-  Linxia County: Linxia  # Linxia, Gansu
   Liuzhi:  Luzhi  # Liupanshui, Guizhou
   Lueyang: Lveyang # Hanzhong, Shaanxi (error in gb2260)
   Lvchun: Luchun  # Honghe, Yunnan
@@ -39,29 +43,47 @@ rename regions:
   Ngri: Ngari  # Tibet
   Pizhou:  Peizhou  # Xuzhou, Jiangsu
   Sahuangjiang: Shuangjiang  # Lincang, Yunnan
+  Sui: Suixian  # Shangqiu, Henan (to disambiguate w/ Suiyangqu, Shangqiu)
   Suiling:  Suileng  # Suihua, Heilongjiang
+  Tacheng: Tacheng diqu  # Xinjiang (to disambiguate with its subdivision)
   Tanchang: Dangchang  # Longnan, Gansu
   Wuchuang: Wuchuan  # Zunyi, Guizhou
+  Wulumuqi: Urumqi  # 650121, in Urumqi, Xinjiang
+  Xian: Xi'an  # Shaanxi (to disambiguate w/ Xianyang, Shaanxi)
   Xilinggol: Xilingol  # Inner Mongolia
+  Xun: Jun  # Hebi, Henan
   Zhalaite:  Zalaite  # Xingan, Inner Mongolia
   Zhashui: Zuoshui  # Shangluo, Shaanxi
+  Zhong: Zhongxian  # Chongqing (to disambiguate with Zhongqingshi)
   Zhongmu: Zhongmou  # Zhengzhou, Henan
   Zhongweishixiaqu: Zhongwei city area  # Zhongwei, Ningxia (error in gb2260)
 
 
-# The following appear in some series names, but not in the gb2260 database
-discard regions:
-  Gunzhou:  # Jining, Shandong
-  Guoyang:  # Bozhou, Anhui
-  Jiaonan:  # Qingdao, Shandong
-  Miquan:  # Changji, Xinjiang
-  Muyang:  # Suqian, Jiangsu
-  Nanhui:  # Shanghai
-  Shifang:  # Deyang, Sichuan
-  Tanghai:  # Tangshan, Hebei
-  Wubu:  # Yulin, Shaanxi
-  Yanshui:  # Panzhihua, Sichuan
-  "Zha'nang":  # Lhokha, Tibet
+# The following appear in some series names, but not in the 2015 gb2260 database
+missing regions:
+  "Tianjin:Baodi": 0
+  "Shanxi:Yangquan:Meng": 0
+  "Hebei:Shijiazhuang:Xinji": 139002  # was 130181, now not in Shijiazhuang
+  "Hebei:Baoding:Li": 130635  # ambiguous with 130606 Lianchiqu
+  "Inner Mongolia:Erdos:Etuoke": 150624  # ambiguous w/ 150623 Etuokeqianqi
+  "Anhui:Huainan:Shou": 0
+  "Anhui:Xuancheng:Jing": 341823  # ambiguous with 341825 Jingdexian
+  "Jiangxi:Shangrao:Yanshan": 0
+  "Shandong:Heze:Shan": 0
+  "Hubei:Shiyan:Yun": 420304  # Yunyangqu
+  "Hubei:Qianjiang": 429005  # doesn't match at 2nd level
+  "Guangdong:Yunfu:Yunan": 0  # CEIC doesn't distinguish 445302 Yunanqu and
+                              # 445322 Yunanxian
+  "Hainan:Sanya:Baisha": 0
+  "Sichuan:Liangshan:Huidong": 513426  # Liangshan matches 370832 (bug)
+  "Sichuan:Liangshan:Yuexi": 513434
+  "Guizhou:Southwest Guizhou:Jinsha": 520523  # under Bijie, not 522300
+  "Yunnan:Dehong:Luxi": 532527  # under Honghe, not 533100 Dehong
+  "Gansu:Longnan:Li": 621226  # can't rename bc 'Li' appears elsewhere
+  "Gansu:Linxia:Linxia County": 622921
+  "Xinjiang:Hotan:'Hetian County'": 653221
+  "Xinjiang:Ili Kazak:Yining": 0  # CEIC doesn't distinguish 654002 Yiningshi
+                                  # and 654021 Yiningxian
 
 
 dimensions:
