@@ -24,6 +24,7 @@ rename regions:
   Hami: Hami diqu  # Xinjiang (to disambiguate with its subdivision)
   Hetian City: Hetian shi  # Hotan, Xinjiang
   Honghe: Honghe Ha'nizu Yizu  # Yunnan (to disambiguate with its subdivision)
+  Jizhou: Ji # Tianjin
   Junlian: Yunlian  # Yibin, Sichuan
   Kashi: Kaxgar  # Xinjiang
   Kazuo:  Kalaqin zuoyi  # Chaoyang, Liaoning
@@ -66,12 +67,14 @@ missing regions:
   "Hebei:Shijiazhuang:Xinji": 139002  # was 130181, now not in Shijiazhuang
   "Hebei:Baoding:Li": 130635  # ambiguous with 130606 Lianchiqu
   "Inner Mongolia:Erdos:Etuoke": 150624  # ambiguous w/ 150623 Etuokeqianqi
+  "Liaoning:Jinzhou:Linhai": 210781  # ambiguous with 331082
   "Anhui:Huainan:Shou": 0
   "Anhui:Xuancheng:Jing": 341823  # ambiguous with 341825 Jingdexian
   "Jiangxi:Shangrao:Yanshan": 0
   "Shandong:Heze:Shan": 0
   "Hubei:Shiyan:Yun": 420304  # Yunyangqu
   "Hubei:Qianjiang": 429005  # doesn't match at 2nd level
+  "Guangdong:Meizhou:Mei": 441402  # ambiguous with 610326
   "Guangdong:Yunfu:Yunan": 0  # CEIC doesn't distinguish 445302 Yunanqu and
                               # 445322 Yunanxian
   "Hainan:Sanya:Baisha": 0
@@ -99,11 +102,13 @@ preprocess:
   - predicate: "'Petroleum Product' in row['name']"
     transform: "row['name'] = row['name'][1:] + row['name'][:1]"
 
+
 rename variables:  # Internal name: [CEIC name fragment]
   area: [Land Area of Administrative Zone]
   area_city: [Developed Area of City Construction]
   area_floor: [Floor Area of Residential Building per Capita]
   area_floor: [Floor Area of Residential Building per Capita, Rural]
+  area_road: [Area of Paved Road, City]
   exp_cap: [Consumption Expenditure per Capita]
   exp_cap_rural2: [Living Exp per Capita, Rural Household]
   exp_cap_rural: [Consumption Expenditure per Capita, Rural]
@@ -153,6 +158,8 @@ rename variables:  # Internal name: [CEIC name fragment]
   p_hwy_comm_mv: [Highway, Passenger Traffic, Commercial, Motor Vehicle]
   p_hwy_pt: [Highway, Passenger Traffic, Public Transport]
   p_rail: [Railway, Passenger Traffic]
+  price_prop: [Property Price]
+  price_prop_res: [Property Price, Residential]
   pkm_coastal: [Coastal, Passenger Turnover]
   pkm_hwy: [Highway, Passenger Turnover]
   pkm_hwy_comm: [Highway, Passenger Turnover, Commercial]
@@ -163,6 +170,8 @@ rename variables:  # Internal name: [CEIC name fragment]
   pop: [Population]
   pop_census: [Population, Census]
   pop_non_ag: [Population, Non Agricultural]
+  stock_bus: [No of Public Transit Vehicle, Bus and Trolley Bus]
+  stock_bus: [No of Public Transit Vehicle, City, Bus and Trolley Bus]
   stock_comm: [No of Motor Vehicle, Commercial]
   stock_comm_pass: [No of Motor Vehicle, Commercial, Passenger]
   stock_comm_truck: [No of Motor Vehicle, Commercial, Truck]
