@@ -215,7 +215,13 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
                 df = _deduplicate(df)
                 df.set_index('gbcode', drop=False, inplace=True)
 
-            df = _normalize_units(df, data_cols)
+            try:
+                df = _normalize_units(df, data_cols)
+            except TypeError as e:
+                # Series w/ incompatible units grouped together under *key*
+                message.append(str(e))
+                message.append(str(df[['unit', 'series code alpha']]))
+                raise VariableImportError
 
             # Construct metadata
             attrs, name = _make_attrs(df, name_group)
