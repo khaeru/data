@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CEIC Data China Premium Database"""
+"""CEIC Data China Premium Database."""
 from functools import lru_cache
 import logging
 from os.path import commonprefix, exists, dirname, join
@@ -722,7 +722,7 @@ if __name__ == '__main__':
     except ImportError:  # User hasn't downloaded _util.py
         pass
 
-    @click.group()
+    @click.group(help=__doc__)
     @click.option('--verbose', is_flag=True, help='Give verbose output')
     def cli(verbose):
         global VERBOSE
