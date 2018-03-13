@@ -78,6 +78,11 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
 
     # Read data from each CSV file in input_dir
     log.info('Read data')
+    csv_rename = {
+        '': 'Name',
+        'Unnamed: 0': 'Name',
+        'Series ID': 'Series Code',  # as of 2018-03
+        }
     for fn in glob(join(input_dir, '*.csv')):
         log.debug('  from %s', fn)
 
@@ -85,7 +90,7 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
         # duplicate rows
         tmp = pd.read_csv(fn).dropna(axis=[0, 1], how='all') \
                 .drop_duplicates() \
-                .rename(columns={'': 'Name', 'Unnamed: 0': 'Name'})
+                .rename(columns=csv_rename)
 
         log.debug('  %d series', len(tmp))
 
@@ -135,6 +140,12 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
         data,
         data['series code'].str.extract(sc_regex, expand=True),
         ], axis=1).rename(columns=sc_rename)
+
+    # Processing cannot continue if the series code alpha contains nulls
+    nulls = data['series code alpha'].isnull()
+    if nulls.any():
+        print(data[nulls])
+        assert False
 
     # Frequency to lower case
     data['frequency'] = data['frequency'].str.lower()
