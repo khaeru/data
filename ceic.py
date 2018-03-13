@@ -260,13 +260,13 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
 
         ds = xr.merge(arrays).dropna(dim='period', how='all')
 
-        log.info('  %d variables', len(ds))
+        log.info('  %d variables', len(ds.variables))
         # log.debug('Resulting xarray.Dataset:\n%s', ds)  # *extremely* verbose
 
         # Count variables and non-null values
-        count['variables'] += len(ds)
+        count['variables'] += len(ds.variables)
         notnull = ds.notnull().sum()
-        values = sum([notnull[x] for x in notnull])
+        values = sum([notnull[x] for x in notnull.variables])
         count['values'] += values
 
         log.info('  %d non-null values', values)
@@ -662,7 +662,7 @@ def _normalize_units(df, data_cols):
         # Can't simply assign here; see
         # https://github.com/hgrecco/pint/issues/401
         for label in df.index:
-            result.set_value(label, 'unit', common)
+            result.at[label, 'unit'] = common
         return result
 
 
