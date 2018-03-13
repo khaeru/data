@@ -334,25 +334,27 @@ def load_ceic(input_dir=DATA_DIR):
     return data
 
 
-def select(data, vars):
-    """Select only *vars* from *data*
+def select(data, names, **kwargs):
+    """Select only *names* from *data*
 
-    Returns an xarray.Dataset containing the variables *vars*. *data* is a dict
-    of {level: xr.Dataset}, such as returned by load_ceic(). Data at the
-    national level is assigned 'gbcode' 0.
+    Returns an xarray.Dataset containing the variables *names*. *data* is a
+    dict of {level: xr.Dataset}, such as returned by load_ceic(). Optional
+    *kwargs* are used to further subset the data.
+
+    Data at the national level is assigned 'gbcode' 0.
     """
     # TODO merge metadata in Dataset- and variable-level attrs
     #      - can use logic like in _make_attrs()
 
     # Process arguments
-    if not isinstance(vars, list):
-        vars = [vars]
+    if isinstance(names, str):
+        names = [names]
 
     to_combine = []
 
     for level in sorted(data.keys()):
         # Select only the variable of interest
-        level_vars = list(filter(lambda v: v in data[level].data_vars, vars))
+        level_vars = list(filter(lambda v: v in data[level].data_vars, names))
         ds = data[level][level_vars]
 
         # Add the 'gbcode' dimension to data at the national level
@@ -362,7 +364,7 @@ def select(data, vars):
 
         to_combine.append(ds)
 
-    return xr.auto_combine(to_combine, concat_dim='gbcode')
+    return xr.auto_combine(to_combine, concat_dim='gbcode').sel(**kwargs)
 
 
 def _deduplicate(df):
@@ -761,5 +763,8 @@ if __name__ == '__main__':
 
         s2 = select(data, ['pop', 'pop_non_ag'])
         print(s2, s2['pop_non_ag'])
+
+        s3 = select(data, 'CNLAB', period=['1995', '2002', '2007'])
+        print(s3, s3['CNLAB'], s3.to_dataframe())
 
     cli()
