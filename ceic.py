@@ -312,7 +312,7 @@ def import_ceic(filename=None, input_dir=DATA_DIR, output_dir=DATA_DIR,
     return dss
 
 
-def load_ceic(input_dir=DATA_DIR):
+def load_ceic(input_dir=DATA_DIR, units=False):
     """Load CEIC Data.
 
     Data is returned as an xarray.Dataset.
@@ -348,7 +348,10 @@ def load_ceic(input_dir=DATA_DIR):
 
         data[level] = ds
 
-    return data
+    if units:
+        return data, META['ureg']
+    else:
+        return data
 
 
 def load_ceic_units():
