@@ -351,6 +351,12 @@ def load_ceic(input_dir=DATA_DIR):
     return data
 
 
+def load_ceic_units():
+    """Return units to be passed to pint.UnitRegistry.load_definitions."""
+    _read_metadata(DATA_DIR)
+    return StringIO(META['units'])
+
+
 def select(data, names, **kwargs):
     """Select only *names* from *data*
 
