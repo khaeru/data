@@ -705,7 +705,7 @@ def _read_metadata(input_dir):
     global META
 
     options_fn = join(input_dir, 'metadata.yaml')
-    log.info('Read metadata from %s', options_fn)
+    log.debug('Read metadata from %s', options_fn)
 
     with open(options_fn) as f:
         META.update(yaml.load(f))
