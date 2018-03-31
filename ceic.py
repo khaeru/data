@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """CEIC Data China Premium Database."""
 from functools import lru_cache
+from io import StringIO
 import logging
 from os.path import commonprefix, exists, dirname, join
 import pickle
 
-import pandas as pd  # >= 0.20
+import pandas as pd
 import pint
 import xarray as xr
-# Importing data also requires: gb2260, tqdm
 
 __all__ = [
     'import_ceic',
@@ -435,7 +435,6 @@ def _get_name(name):
 
 def _load_units(defs):
     """Set up a pint.UnitRegsitry from the string unit *defs*."""
-    from io import StringIO
 
     global META
 
