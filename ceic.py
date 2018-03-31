@@ -770,17 +770,23 @@ if __name__ == '__main__':
         import_ceic(output_dir=output_dir, cache=not no_cache)
 
     @cli.command()
-    def demo():
-        """Load data from the cache and exit."""
+    @click.argument('names', nargs=-1)
+    def dump(names):
+        """Print NAMES from the cache to stdout."""
+        import pager
+
+        # Load data
+        print('Loading...')
         data = load_ceic()
 
-        s1 = select(data, 'pop')
-        print(s1, s1['pop'])
+        # Write the data to a buffer
+        print('Buffering...')
+        buf = StringIO()
+        select(data, names).to_dataframe().dropna(how='all').to_string(buf)
 
-        s2 = select(data, ['pop', 'pop_non_ag'])
-        print(s2, s2['pop_non_ag'])
-
-        s3 = select(data, 'CNLAB', period=['1995', '2002', '2007'])
-        print(s3, s3['CNLAB'], s3.to_dataframe())
+        # Replay the buffer page by page
+        buf.seek(0)
+        pager.page(buf)
+        print('')
 
     cli()
