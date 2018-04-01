@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """National Bureau of Statistics of China."""
 import json
-from os.path import dirname, exists, join
+from os.path import dirname, getmtime, join
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -9,42 +10,89 @@ import xarray as xr
 
 __all__ = [
     'load_nbs',
+    'load_nbs_web',
     ]
 
 BASE_URL = 'http://data.stats.gov.cn/english/easyquery.htm'
 CACHE_DIR = join(dirname(__file__), 'cn_nbs')
 
 
+def _cache_fn(cache_dir, level, series, period, ext):
+    """Return a cache filename."""
+    return join(cache_dir, '%s_%s_%s.%s' % (level, series, period, ext))
+
+
 def load_nbs(level, series, period, cache_dir=CACHE_DIR, offline=False):
-    cache_path = join(cache_dir, '%s_%s_%s.json' % (level, series, period))
-    if exists(cache_path):
-        with open(cache_path) as f:
-            raw = json.load(f)
-        return parse_nbs_json(raw)
-    elif not offline:
-        return load_nbs_web(level, series, period, cache_dir)
+    """Return an xarray.Dataset for the NBS *level*, *series* and *period*.
+
+    Data are identified by three dimensions, all given as strings:
+    - *level*: either 'national' or 'regional'. If 'regional', the dataset has
+      a coord 'region' which is the integer GB/T 2260 code for the region.
+    - *series*: the indicator requested, e.g. 'A090302'.
+    - *periods* a list of periods with one or more entries, in the forms
+      indicated by the web interface, e.g.:
+      - '1995': the single year 1995
+      - '2003,2012': the years 2003 and 2012
+      - 'LATEST10': the most recent 10 periods for which data is available
+      - 'LAST5': any data available for the most recent 5 periods
+
+    Raw data returned by the JSON API and pickled xr.Datasets are saved in the
+    optional *cache_dir* (default: './cn_nbs') with file names like:
+
+        '*cache_dir*/*level*_*series*_*periods*.[json|pkl]'
+
+    If *offline* is True, no network traffic is attempted and only local files
+    are used.
+    """
+    # Cache at two levels:
+    # The raw JSON downloaded from the NBS website
+    json_cache = _cache_fn(cache_dir, level, series, period, 'json')
+    # A pickled version of the xarray data structure after parsing
+    pickle_cache = _cache_fn(cache_dir, level, series, period, 'pkl')
+
+    class OutdatedCacheError(Exception):
+        pass
+
+    try:
+        # Get the modification time of the JSON cache
+        json_time = getmtime(json_cache)
+        try:
+            # Get the modification time of the pickled cache
+            pickle_time = getmtime(pickle_cache)
+
+            if pickle_time < json_time:
+                # JSON is newer than the pickled version; force a re-parse
+                raise OutdatedCacheError
+            else:
+                # Return the pickled version
+                with open(pickle_cache, 'rb') as f:
+                    result = pickle.load(f)
+        except (OSError, OutdatedCacheError):
+            # Pickled cache doesn't exist or is out of date
+            with open(json_cache) as f:
+                raw = json.load(f)
+
+            result = parse_nbs_json(raw)
+
+            with open(pickle_cache, 'wb') as f:
+                pickle.dump(result, f)
+    except OSError:
+        # JSON cache doesn't exist
+        if not offline:
+            result = load_nbs_web(level, series, period, cache_dir)
+        else:
+            message = "offline=False given but no local cache for (%s, %s, %s)"
+            raise ValueError(message % (level, series, period))
+
+    return result
 
 
-def load_nbs_web(level, series, periods, cache_dir=CACHE_DIR):
-    """Load the China National Bureau of Statistics web data API.
-
-    *level* must be either 'national' or 'regional'. *series* must be a string
-    indicating the data series requested, e.g. 'A090302'. *periods* must be a
-    list of periods with one or more entries, in the forms indicated by the web
-    interface:
-    - 1995
-    - 2003,2012
-    - LATEST10
-    - LAST5
-
-    Returns an xarray.Dataset containing the requested data. If *cache_dir* is
-    a directory (default: None), raw data returned by the JSON API is saved in
-    a file named '*cache_dir*/*level*_*series*_*periods*.json'.
+def load_nbs_web(level, series, periods, cache_dir=None):
+    """Fetch & parse from the China National Bureau of Statistics web data API.
 
     load_nbs_web() does not currently support:
     - quarterly or monthly data, or
     - data at aggregations other than national or regional.
-
     """
     # Example query string (decoded):
     # http://data.stats.gov.cn/english/easyquery.htm?m=QueryData
@@ -103,14 +151,14 @@ def load_nbs_web(level, series, periods, cache_dir=CACHE_DIR):
     prepped = Request('GET', BASE_URL, params=params).prepare()
 
     # Print the complete query string for debugging
-    print(prepped.url)
+    print('Query: ', prepped.url, sep='\n')
 
     # Retrieve the data
     result = Session().send(prepped)
 
     # Cache data if requested
     if cache_dir is not None:
-        cache_fn = join(cache_dir, '%s_%s_%s.json' % (level, series, periods))
+        cache_fn = _cache_fn(cache_dir, level, series, periods, 'json')
         with open(cache_fn, 'w') as f:
             json.dump(result.json(), f, indent=2)
 
