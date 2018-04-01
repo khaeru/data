@@ -15,21 +15,17 @@ BASE_URL = 'http://data.stats.gov.cn/english/easyquery.htm'
 CACHE_DIR = join(dirname(__file__), 'cn_nbs')
 
 
-def load_nbs(level, series, period, cache_dir=CACHE_DIR):
+def load_nbs(level, series, period, cache_dir=CACHE_DIR, offline=False):
     cache_path = join(cache_dir, '%s_%s_%s.json' % (level, series, period))
     if exists(cache_path):
         with open(cache_path) as f:
             raw = json.load(f)
         return parse_nbs_json(raw)
-    else:
+    elif not offline:
         return load_nbs_web(level, series, period, cache_dir)
 
-# curl 'http://data.stats.gov.cn/english/easyquery.htm?m=QueryData&dbcode=hgnd&rowcode=zb&colcode=sj&wds=%5B%5D&dfwds=%5B%7B%22wdcode%22%3A%22sj%22%2C%22valuecode%22%3A%221995-2014%22%7D%5D&k1=1472763426686' -H 'Accept: application/json, text/javascript, */*; q=0.01' -H 'Referer: http://data.stats.gov.cn/english/easyquery.htm?cn=C01' -H 'X-Requested-With: XMLHttpRequest' -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2837.0 Safari/537.36' --compressed
 
-# curl 'http://data.stats.gov.cn/english/easyquery.htm?m=QueryData&dbcode=hgnd&rowcode=zb&colcode=sj&wds=%5B%5D&dfwds=%5B%7B%22wdcode%22%3A%22zb%22%2C%22valuecode%22%3A%22A090302%22%7D%5D&k1=1472763563287' -H 'Cookie: JSESSIONID=DC6EE94A71D8597AB0B249B7337EFB79; experience=show; u=6' -H 'DNT: 1' -H 'Accept-Encoding: gzip, deflate, sdch' -H 'Accept-Language: en-GB,en;q=0.8,en-US;q=0.6,en-CA;q=0.4' -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2837.0 Safari/537.36' -H 'Accept: application/json, text/javascript, */*; q=0.01' -H 'Referer: http://data.stats.gov.cn/english/easyquery.htm?cn=C01' -H 'X-Requested-With: XMLHttpRequest' -H 'Connection: keep-alive' --compressed
-
-
-def load_nbs_web(level, series, periods, cache_dir=None):
+def load_nbs_web(level, series, periods, cache_dir=CACHE_DIR):
     """Load the China National Bureau of Statistics web data API.
 
     *level* must be either 'national' or 'regional'. *series* must be a string
@@ -50,9 +46,14 @@ def load_nbs_web(level, series, periods, cache_dir=None):
     - data at aggregations other than national or regional.
 
     """
-    # Example from http://data.stats.gov.cn/english/easyquery.htm?m=QueryData&dbcode=fsnd&rowcode=reg&colcode=sj&wds=[{"wdcode":"zb","valuecode":"A090201"}]&dfwds=[{"wdcode":"sj","valuecode":"1995-2014"}]&k1=1472740901192
-
-    # curl 'http://data.stats.gov.cn/english/easyquery.htm?m=QueryData&dbcode=fsnd&rowcode=reg&colcode=sj&wds=%5B%7B%22wdcode%22%3A%22zb%22%2C%22valuecode%22%3A%22A090201%22%7D%5D&dfwds=%5B%7B%22wdcode%22%3A%22sj%22%2C%22valuecode%22%3A%222013-2014%22%7D%5D&k1=1472747318027' -H 'Accept: application/json, text/javascript, */*; q=0.01' -H 'Referer: http://data.stats.gov.cn/english/easyquery.htm?cn=E0103' -H 'X-Requested-With: XMLHttpRequest' -H 'User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2837.0 Safari/537.36' --compressed
+    # Example query string (decoded):
+    # http://data.stats.gov.cn/english/easyquery.htm?m=QueryData
+    #   &dbcode=fsnd
+    #   &rowcode=reg
+    #   &colcode=sj
+    #   &wds=[{"wdcode":"zb","valuecode":"A090201"}]
+    #   &dfwds=[{"wdcode":"sj","valuecode":"1995-2014"}]
+    #   &k1=1472740901192
     from datetime import datetime
     from requests import Request, Session
 
@@ -118,41 +119,87 @@ def load_nbs_web(level, series, periods, cache_dir=None):
 
 
 def parse_nbs_json(data):
+    """Parse *data* for a single indicator."""
+    assert data['returncode'] == 200, 'Data was produced by a failed request'
+
     ds = xr.Dataset()
+    da_attrs = {}
 
-    returncode = data['returncode']
-    assert returncode == 200
+    # Read dimension information
+    for dim_info in data['returndata']['wdnodes']:
+        # This is one of:
+        # reg (region) = region
+        # sj (shíjiān, time period) = period
+        # zb (zhǐbiāo, index) = indicator
+        dim_id = dim_info['wdcode']
 
-    # Metadata
-    wdnodes = data['returndata']['wdnodes']
-    for dimension in wdnodes:
-        wdcode = dimension['wdcode']
+        # List of codes along this dimension
         codes = []
-        for node in dimension['nodes']:
-            codes.append(node['code'])
-        ds[wdcode] = codes
-        ds[wdcode].attrs['wdname'] = dimension['wdname']
-        ds.set_coords(wdcode)
+        for node in dim_info['nodes']:
+            code = node['code']
+            codes.append(code)
 
-    shape = [c.size for _, c in ds.coords.items()]
-    ds['data'] = (ds.coords, np.ones(shape) * np.nan)
-    ds['hasdata'] = (ds.coords, np.zeros(shape, dtype=bool))
+            # For indicators, also store metadata
+            if dim_id == 'zb':
+                da_attrs[code] = {}
+                for key, value in node.items():
+                    # Skip empty metadata
+                    if value != '':
+                        da_attrs[code][key] = value
 
-    datanodes = data['returndata']['datanodes']
-    for datanode in datanodes:
-        wds = {}
-        for wd in datanode['wds']:
-            wds[wd['wdcode']] = wd['valuecode']
-        dim = tuple([wds[wdcode] for wdcode in ds.coords])
-        if datanode['data']['hasdata']:
-            ds['hasdata'].loc[dim] = True
-            ds['data'].loc[dim] = datanode['data']['data']
+        # Make the dimension a coordinate in the xr.Dataset
+        ds[dim_id] = codes
+        ds.set_coords(dim_id)
+
+        # Name of this dimension
+        ds[dim_id].attrs['wdname'] = dim_info['wdname']
+
+    # Compute the shape of the data
+    coords = []
+    shape = []
+    for name, coord in ds.coords.items():
+        if name != 'zb':
+            coords.append(name)
+            shape.append(coord.size)
+
+    # Allocate one xr.DataArray for each indicator
+    for zb in ds['zb'].values:
+        ds[zb] = (coords, np.ones(shape) * np.nan)
+        # Save attributes
+        ds[zb].attrs = da_attrs[zb]
+
+    # Drop the indicator dimension
+    ds = ds.drop('zb')
+
+    # Iterate over data points
+    for obs in data['returndata']['datanodes']:
+        # Skip observations with no data
+        if not obs['data']['hasdata']:
+            continue
         else:
-            pass
+            value = obs['data']['data']
 
-    rename = {'zb': 'indicator', 'sj': 'period', 'reg': 'region'}
-    ds = ds.rename({k: v for k, v in rename.items() if k in ds.coords})
+        # Assemble the coordinates of this data point
+        wds = {wd['wdcode']: wd['valuecode'] for wd in obs['wds']}
 
+        # Separate the indicator
+        zb = wds.pop('zb')
+
+        # Retrieve the dimensions matching the coords
+        dim = tuple([wds[wdcode] for wdcode in ds.coords])
+
+        # Store
+        ds[zb].loc[dim] = value
+
+    # Rename the dimensions using the more descriptive 'wdname'
+    rename = {}
+    for dim_name, da in ds.coords.items():
+        rename[dim_name] = da.attrs['wdname'].lower()
+    # …except use common "period" instead of "year", "month", etc.
+    rename['sj'] = 'period'
+    ds = ds.rename(rename)
+
+    # Convert frequency and sort by date
     freq = {
         'Year': 'A',
         }[ds['period'].attrs['wdname']]
@@ -160,6 +207,7 @@ def parse_nbs_json(data):
     ds['period'] = periods
     ds = ds.reindex(period=sorted(periods))
 
+    # Convert region codes to integers
     if 'region' in ds.coords:
         ds['region'] = [int(r) for r in ds['region'].values]
 
@@ -175,8 +223,26 @@ if __name__ == '__main__':
     except ImportError:  # User hasn't downloaded _util.py
         pass
 
-    @click.group(help=__doc__)
-    def cli():
-        pass
+    cli = click.Group('cli', help=__doc__)
+
+    def common_options(f):
+        f = click.argument('series', nargs=1)(f)
+        f = click.option('--period', 'period', required=True)(f)
+        f = click.option('--level', 'level', required=True,
+                         type=click.Choice(['national', 'regional']))(f)
+        return f
+
+    @cli.command()
+    @common_options
+    def fetch(level, period, series):
+        result = load_nbs_web(level, series, period)
+        print(result)
+
+    @cli.command()
+    @common_options
+    def dump(level, period, series):
+        result = load_nbs(level, series, period, offline=True)
+        for name, da in result.data_vars.items():
+            print(name, da)
 
     cli()
