@@ -1,7 +1,0 @@
-click >= 6.7
-git+https://github.com/khaeru/gb2260.git@63c067db5ca078591f21b8a2fb48ef54e148600c
-pandas >= 0.20.0
-pint >= 0.8.0
-PyYAML >= 3.12
-xarray >= 0.10.2
-tqdm >= 4.19.8

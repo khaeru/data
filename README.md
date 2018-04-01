@@ -10,10 +10,12 @@ This repository contains Python 3 modules that retrieve, clean, subset and other
 * `cn_nbs` — National Bureau of Statistics of China
 * `naturalearth` — [Natural Earth](http://naturalearthdata.com) GIS
 
-The modules are independent but have a roughly similar [API](https://en.wikipedia.org/wiki/Application_programming_interface). Each module…
+The modules are largely independent but have a roughly similar [API](https://en.wikipedia.org/wiki/Application_programming_interface). Each module…
 - contains a method like `load_ceic()` that returns data in a clean, Pythonic form.
 - may contain a method like `import_ceic()` that processes raw data sets into a cache in the directory of the name (e.g. `ceic/` for `ceic.py`).
 - can be invoked as a command-line program, e.g. `python3 -m ceic`. Invoking a module without any arguments gives basic usage instructions, but the code is also documented.
 - may make use of a configuration file in the directory of the same name. Example configuration files are provided.
+
+The variable `requirements` in the top-level module gives the dependencies for each module.
 
 If you use this code, please cite using the DOI above.
